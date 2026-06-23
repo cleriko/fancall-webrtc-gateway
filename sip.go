@@ -43,11 +43,19 @@ type SIPBridge struct {
 // SIPConfig holds SIP endpoint configuration
 type SIPConfig struct {
 	LocalIP     string
-	LocalPort   int // SIP signaling port
+	LocalPort   int    // SIP signaling port
+	PublicIP    string // Publicly routable IP address
 	Username    string
 	Password    string
 	Domain      string
 	DisplayName string
+}
+
+func (s *SIPBridge) sipIP() string {
+	if s.config.PublicIP != "" && s.config.PublicIP != "0.0.0.0" {
+		return s.config.PublicIP
+	}
+	return s.config.LocalIP
 }
 
 // NewSIPBridge creates a new SIP bridge
@@ -262,10 +270,11 @@ func (s *SIPBridge) handleOK(msg string, lines []string) {
 func (s *SIPBridge) register() error {
 	registerURI := fmt.Sprintf("sip:%s", s.config.Domain)
 	fromURI := fmt.Sprintf("sip:%s@%s", s.config.Username, s.config.Domain)
-	contactURI := fmt.Sprintf("sip:%s@%s:%d", s.config.Username, s.config.LocalIP, s.config.LocalPort)
+	sipIP := s.sipIP()
+	contactURI := fmt.Sprintf("sip:%s@%s:%d", s.config.Username, sipIP, s.config.LocalPort)
 
 	msg := fmt.Sprintf("REGISTER %s SIP/2.0\r\n", registerURI)
-	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", s.config.LocalIP, s.config.LocalPort, generateBranch())
+	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", sipIP, s.config.LocalPort, generateBranch())
 	msg += fmt.Sprintf("From: \"%s\" <%s>;tag=%s\r\n", s.config.DisplayName, fromURI, generateTag())
 	msg += fmt.Sprintf("To: \"%s\" <%s>\r\n", s.config.DisplayName, fromURI)
 	msg += fmt.Sprintf("Call-ID: %s\r\n", generateCallID())
@@ -299,7 +308,8 @@ func (s *SIPBridge) Call(toNumber string) error {
 	// Build INVITE
 	uri := fmt.Sprintf("sip:%s@%s", toNumber, s.config.Domain)
 	fromURI := fmt.Sprintf("sip:%s@%s", s.config.Username, s.config.Domain)
-	contactURI := fmt.Sprintf("sip:%s@%s:%d", s.config.Username, s.config.LocalIP, s.config.LocalPort)
+	sipIP := s.sipIP()
+	contactURI := fmt.Sprintf("sip:%s@%s:%d", s.config.Username, sipIP, s.config.LocalPort)
 
 	callID := generateCallID()
 	fromTag := generateTag()
@@ -313,7 +323,7 @@ func (s *SIPBridge) Call(toNumber string) error {
 	sdp := s.createSDPOffer()
 
 	msg := fmt.Sprintf("INVITE %s SIP/2.0\r\n", uri)
-	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", s.config.LocalIP, s.config.LocalPort, generateBranch())
+	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", sipIP, s.config.LocalPort, generateBranch())
 	msg += fmt.Sprintf("From: \"%s\" <%s>;tag=%s\r\n", s.config.DisplayName, fromURI, fromTag)
 	msg += fmt.Sprintf("To: <sip:%s@%s>\r\n", toNumber, s.config.Domain)
 	msg += fmt.Sprintf("Call-ID: %s\r\n", callID)
@@ -354,9 +364,10 @@ func (s *SIPBridge) Hangup() {
 	s.mu.Unlock()
 
 	fromURI := fmt.Sprintf("sip:%s@%s", s.config.Username, s.config.Domain)
+	sipIP := s.sipIP()
 
 	msg := fmt.Sprintf("BYE sip:%s@%s SIP/2.0\r\n", s.config.Domain, s.config.Domain)
-	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", s.config.LocalIP, s.config.LocalPort, generateBranch())
+	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", sipIP, s.config.LocalPort, generateBranch())
 	msg += fmt.Sprintf("From: <%s>;tag=%s\r\n", fromURI, fromTag)
 	msg += fmt.Sprintf("To: <sip:%s@%s>;tag=%s\r\n", s.config.Domain, s.config.Domain, toTag)
 	msg += fmt.Sprintf("Call-ID: %s\r\n", callID)
@@ -468,7 +479,7 @@ func (s *SIPBridge) buildResponse(status string, requestLines []string) string {
 
 	resp += fmt.Sprintf("Call-ID: %s\r\n", callID)
 	resp += fmt.Sprintf("CSeq: %s\r\n", cseq)
-	resp += fmt.Sprintf("Contact: <sip:%s@%s:%d>\r\n", s.config.Username, s.config.LocalIP, s.config.LocalPort)
+	resp += fmt.Sprintf("Contact: <sip:%s@%s:%d>\r\n", s.config.Username, s.sipIP(), s.config.LocalPort)
 	resp += fmt.Sprintf("Server: FancallGateway/1.0\r\n")
 
 	return resp
@@ -503,6 +514,7 @@ func (s *SIPBridge) isPendingRegister() bool {
 }
 
 func (s *SIPBridge) createSDPOffer() string {
+	sipIP := s.sipIP()
 	return fmt.Sprintf("v=0\r\n"+
 		"o=- %d 0 IN IP4 %s\r\n"+
 		"s=FancallGateway\r\n"+
@@ -514,10 +526,11 @@ func (s *SIPBridge) createSDPOffer() string {
 		"a=rtpmap:101 telephone-event/8000\r\n"+
 		"a=fmtp:101 0-15\r\n"+
 		"a=sendrecv\r\n",
-		time.Now().Unix(), s.config.LocalIP, s.config.LocalIP, s.rtpPort)
+		time.Now().Unix(), sipIP, sipIP, s.rtpPort)
 }
 
 func (s *SIPBridge) createSDPAnswer() string {
+	sipIP := s.sipIP()
 	return fmt.Sprintf("v=0\r\n"+
 		"o=- %d 0 IN IP4 %s\r\n"+
 		"s=FancallGateway\r\n"+
@@ -529,7 +542,7 @@ func (s *SIPBridge) createSDPAnswer() string {
 		"a=rtpmap:101 telephone-event/8000\r\n"+
 		"a=fmtp:101 0-15\r\n"+
 		"a=sendrecv\r\n",
-		time.Now().Unix(), s.config.LocalIP, s.config.LocalIP, s.rtpPort)
+		time.Now().Unix(), sipIP, sipIP, s.rtpPort)
 }
 
 // SIP header extraction helpers

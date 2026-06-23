@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,6 +19,88 @@ type SignalingMessage struct {
 	SDP       *webrtc.SessionDescription `json:"sdp,omitempty"`
 	Candidate *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
 	Error     string                     `json:"error,omitempty"`
+}
+
+// UnmarshalJSON handles both flat SDP string formats and nested SDP object formats
+func (s *SignalingMessage) UnmarshalJSON(data []byte) error {
+	type Alias SignalingMessage
+	var standard struct {
+		Alias
+		SDP any `json:"sdp,omitempty"`
+	}
+
+	if err := json.Unmarshal(data, &standard); err != nil {
+		return err
+	}
+
+	s.Type = standard.Type
+	s.RoomID = standard.RoomID
+	s.Token = standard.Token
+	s.Candidate = standard.Candidate
+	s.Error = standard.Error
+
+	if standard.SDP != nil {
+		switch v := standard.SDP.(type) {
+		case string:
+			// Flat string format: "sdp": "v=0\n..."
+			var sdpType webrtc.SDPType
+			switch s.Type {
+			case "offer":
+				sdpType = webrtc.SDPTypeOffer
+			case "answer":
+				sdpType = webrtc.SDPTypeAnswer
+			case "pranswer":
+				sdpType = webrtc.SDPTypePranswer
+			case "rollback":
+				sdpType = webrtc.SDPTypeRollback
+			}
+			s.SDP = &webrtc.SessionDescription{
+				Type: sdpType,
+				SDP:  v,
+			}
+		case map[string]any:
+			// Nested object format: "sdp": { "type": "offer", "sdp": "v=0\n..." }
+			sdpBytes, err := json.Marshal(v)
+			if err != nil {
+				return err
+			}
+			var sdp webrtc.SessionDescription
+			if err := json.Unmarshal(sdpBytes, &sdp); err != nil {
+				return err
+			}
+			s.SDP = &sdp
+		}
+	}
+
+	return nil
+}
+
+// MarshalJSON marshals the signaling message, flat-mapping the SDP to be compatible with JS WebRTC client
+func (s SignalingMessage) MarshalJSON() ([]byte, error) {
+	// If it is an offer or answer, we output a flat structure where "sdp" is the raw string
+	// to make it directly compatible with new RTCSessionDescription(data) in the JS client
+	if s.SDP != nil && (s.Type == "offer" || s.Type == "answer") {
+		type FlatMessage struct {
+			Type      string                   `json:"type"`
+			RoomID    string                   `json:"room_id,omitempty"`
+			Token     string                   `json:"token,omitempty"`
+			SDP       string                   `json:"sdp,omitempty"`
+			Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
+			Error     string                   `json:"error,omitempty"`
+		}
+		return json.Marshal(FlatMessage{
+			Type:      s.Type,
+			RoomID:    s.RoomID,
+			Token:     s.Token,
+			SDP:       s.SDP.SDP, // output the raw string directly at the top level
+			Candidate: s.Candidate,
+			Error:     s.Error,
+		})
+	}
+
+	// Default fallback
+	type Alias SignalingMessage
+	return json.Marshal(Alias(s))
 }
 
 // HandleWebSocket upgrades HTTP to WebSocket and handles signaling

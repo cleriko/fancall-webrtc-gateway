@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -91,11 +92,24 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		SignalingChan: make(chan SignalingMessage, 100),
 	}
 
+	// Resolve PublicURL to get the public IP address for SIP routing
+	publicIP := "0.0.0.0"
+	if rm.cfg.PublicURL != "" {
+		ips, err := net.LookupIP(rm.cfg.PublicURL)
+		if err == nil && len(ips) > 0 {
+			publicIP = ips[0].String()
+			log.Printf("[RoomManager] Resolved PublicURL %s to IP: %s", rm.cfg.PublicURL, publicIP)
+		} else {
+			log.Printf("[RoomManager] Warning: Failed to resolve PublicURL %s to IP, falling back to 0.0.0.0", rm.cfg.PublicURL)
+		}
+	}
+
 	// Create SIP bridge for Vobiz integration
 	// The SIP bridge will listen for incoming calls from Vobiz
 	sipConfig := SIPConfig{
 		LocalIP:     "0.0.0.0",
 		LocalPort:   0, // Let system assign port
+		PublicIP:    publicIP,
 		Username:    fmt.Sprintf("fan_%s", req.FanID),
 		Password:    generateRandomString(16),
 		Domain:      rm.cfg.SIPDomain,
