@@ -642,9 +642,13 @@ func parseSDP(msg string) (string, int) {
 	lines := strings.Split(msg, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "c=IN IP4 ") {
-			ip = strings.TrimPrefix(line, "c=IN IP4 ")
-		} else if strings.HasPrefix(line, "m=audio ") {
+		lowerLine := strings.ToLower(line)
+		if strings.HasPrefix(lowerLine, "c=in ip4 ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				ip = parts[2]
+			}
+		} else if strings.HasPrefix(lowerLine, "m=audio ") {
 			// Format: m=audio 10242 RTP/AVP 0 ...
 			parts := strings.Fields(line)
 			if len(parts) > 1 {
