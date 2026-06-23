@@ -30,6 +30,7 @@ type Config struct {
 
 func main() {
 	cfg := loadConfig()
+	log.Printf("[Config] Loaded PublicURL: %q", cfg.PublicURL)
 
 	// Initialize room manager
 	roomManager := NewRoomManager(cfg)
@@ -124,6 +125,7 @@ func loadConfig() *Config {
 		WebSocketPath: getEnv("WS_PATH", "/ws"),
 		SIPDomain:     getEnv("SIP_DOMAIN", "registrar.vobiz.ai"),
 		APIKey:        getEnv("API_KEY", ""),
+		PublicURL:     getEnv("PUBLIC_URL", ""),
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
