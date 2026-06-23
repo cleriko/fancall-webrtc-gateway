@@ -156,10 +156,10 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upgrader websocket.
 
 		if err := handleSignalingMessage(room, &msg); err != nil {
 			log.Printf("[WebSocket] Handle error: %v", err)
-			room.SignalingChan <- SignalingMessage{
+			room.SendSignalingMessage(SignalingMessage{
 				Type:  "error",
 				Error: err.Error(),
-			}
+			})
 		}
 	}
 
@@ -193,10 +193,10 @@ func handleJoin(room *Room, msg *SignalingMessage) error {
 	room.SetStatus(RoomStatusSignaling)
 
 	// Notify client that join was successful
-	room.SignalingChan <- SignalingMessage{
+	room.SendSignalingMessage(SignalingMessage{
 		Type:   "joined",
 		RoomID: room.ID,
-	}
+	})
 
 	return nil
 }
@@ -273,16 +273,16 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 		switch state {
 		case webrtc.ICEConnectionStateConnected:
 			room.SetStatus(RoomStatusConnected)
-			room.SignalingChan <- SignalingMessage{
+			room.SendSignalingMessage(SignalingMessage{
 				Type:   "connected",
 				RoomID: room.ID,
-			}
+			})
 		case webrtc.ICEConnectionStateFailed, webrtc.ICEConnectionStateClosed:
 			room.SetStatus(RoomStatusFailed)
-			room.SignalingChan <- SignalingMessage{
+			room.SendSignalingMessage(SignalingMessage{
 				Type:   "disconnected",
 				RoomID: room.ID,
-			}
+			})
 		}
 	})
 
@@ -292,11 +292,11 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 		}
 
 		init := candidate.ToJSON()
-		room.SignalingChan <- SignalingMessage{
+		room.SendSignalingMessage(SignalingMessage{
 			Type:      "ice-candidate",
 			RoomID:    room.ID,
 			Candidate: &init,
-		}
+		})
 	})
 
 	// Set remote description (the offer)
@@ -316,11 +316,11 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 	}
 
 	// Send answer to client
-	room.SignalingChan <- SignalingMessage{
+	room.SendSignalingMessage(SignalingMessage{
 		Type:   "answer",
 		RoomID: room.ID,
 		SDP:    &answer,
-	}
+	})
 
 	return nil
 }
@@ -373,10 +373,10 @@ func handleLeave(room *Room, msg *SignalingMessage) error {
 	room.Close()
 	room.SetStatus(RoomStatusEnded)
 
-	room.SignalingChan <- SignalingMessage{
+	room.SendSignalingMessage(SignalingMessage{
 		Type:   "left",
 		RoomID: room.ID,
-	}
+	})
 
 	return nil
 }

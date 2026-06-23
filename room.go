@@ -296,6 +296,30 @@ func (r *Room) GetWebRTCAPI() *webrtc.API {
 	return r.webrtcAPI
 }
 
+// SendSignalingMessage sends a signaling message safely without panicking on a closed channel
+func (r *Room) SendSignalingMessage(msg SignalingMessage) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// If the room status is ended or failed, don't send
+	if r.Status == RoomStatusEnded || r.Status == RoomStatusFailed {
+		return
+	}
+
+	// Recover from any panics if channel is closed in parallel
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Room] Prevented panic on sending to closed signaling channel: %v", r)
+		}
+	}()
+
+	select {
+	case r.SignalingChan <- msg:
+	default:
+		log.Printf("[Room] Signaling channel full or blocked, dropping message of type %s", msg.Type)
+	}
+}
+
 // HandleCreateRoom handles HTTP POST /api/v1/rooms
 func handleCreateRoom(w http.ResponseWriter, r *http.Request, rm *RoomManager) {
 	var req CreateRoomRequest

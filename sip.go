@@ -214,7 +214,7 @@ func (s *SIPBridge) handleSIPMessage(msg string, remoteAddr *net.UDPAddr) {
 
 // handleInvite processes incoming INVITE from Vobiz
 func (s *SIPBridge) handleInvite(msg string, lines []string, remoteAddr *net.UDPAddr) {
-	log.Printf("[SIP] INVITE received from %s", remoteAddr)
+	log.Printf("[SIP] INVITE received from %s:\n%s", remoteAddr, msg)
 	s.remoteAddr = remoteAddr
 
 	// Extract Call-ID and From tag
@@ -258,10 +258,7 @@ func (s *SIPBridge) handleInvite(msg string, lines []string, remoteAddr *net.UDP
 	log.Printf("[SIP] Sent 200 OK, call connected")
 
 	// Notify room
-	select {
-	case s.room.SignalingChan <- SignalingMessage{Type: "connected", RoomID: s.room.ID}:
-	default:
-	}
+	s.room.SendSignalingMessage(SignalingMessage{Type: "connected", RoomID: s.room.ID})
 }
 
 // handleAck processes ACK
@@ -282,10 +279,7 @@ func (s *SIPBridge) handleBye(msg string, lines []string, remoteAddr *net.UDPAdd
 
 	// Notify room
 	s.room.SetStatus(RoomStatusEnded)
-	select {
-	case s.room.SignalingChan <- SignalingMessage{Type: "left", RoomID: s.room.ID}:
-	default:
-	}
+	s.room.SendSignalingMessage(SignalingMessage{Type: "left", RoomID: s.room.ID})
 }
 
 // handleRegisterResponse processes 200 OK for REGISTER
@@ -645,20 +639,36 @@ func generateCallID() string {
 func parseSDP(msg string) (string, int) {
 	var ip string
 	var port int
+
+	// Normalize line endings to avoid \r issues
+	msg = strings.ReplaceAll(msg, "\r\n", "\n")
 	lines := strings.Split(msg, "\n")
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		lowerLine := strings.ToLower(line)
-		if strings.HasPrefix(lowerLine, "c=in ip4 ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				ip = parts[2]
+
+		// Parse connection information: c=<nettype> <addrtype> <connection-address>
+		if strings.HasPrefix(strings.ToLower(line), "c=") {
+			// Strip c= and spaces around it
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				fields := strings.Fields(strings.TrimSpace(parts[1]))
+				// Fields should be like ["IN", "IP4", "3.111.255.163"]
+				if len(fields) >= 3 {
+					ip = fields[2]
+				}
 			}
-		} else if strings.HasPrefix(lowerLine, "m=audio ") {
-			// Format: m=audio 10242 RTP/AVP 0 ...
-			parts := strings.Fields(line)
-			if len(parts) > 1 {
-				fmt.Sscanf(parts[1], "%d", &port)
+		}
+
+		// Parse media description: m=<media> <port> <proto> <fmt> ...
+		if strings.HasPrefix(strings.ToLower(line), "m=audio") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				fields := strings.Fields(strings.TrimSpace(parts[1]))
+				// Fields should be like ["audio", "10242", "RTP/AVP", "0"]
+				if len(fields) >= 2 {
+					fmt.Sscanf(fields[1], "%d", &port)
+				}
 			}
 		}
 	}
