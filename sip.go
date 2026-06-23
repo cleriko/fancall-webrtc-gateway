@@ -518,7 +518,7 @@ func (s *SIPBridge) buildResponse(status string, requestLines []string) string {
 	resp += fmt.Sprintf("Via: %s\r\n", via)
 	resp += fmt.Sprintf("From: %s\r\n", from)
 
-	if toTag != "" && !strings.Contains(to, "tag=") {
+	if toTag != "" && !strings.Contains(strings.ToLower(to), "tag=") {
 		resp += fmt.Sprintf("To: %s;tag=%s\r\n", to, toTag)
 	} else {
 		resp += fmt.Sprintf("To: %s\r\n", to)
@@ -526,6 +526,15 @@ func (s *SIPBridge) buildResponse(status string, requestLines []string) string {
 
 	resp += fmt.Sprintf("Call-ID: %s\r\n", callID)
 	resp += fmt.Sprintf("CSeq: %s\r\n", cseq)
+
+	// Mirror Record-Route headers from incoming request for proper proxy routing
+	for _, line := range requestLines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(trimmed), "record-route:") {
+			resp += fmt.Sprintf("%s\r\n", trimmed)
+		}
+	}
+
 	resp += fmt.Sprintf("Contact: <sip:%s@%s:%d>\r\n", s.config.Username, s.sipIP(), s.config.LocalPort)
 	resp += fmt.Sprintf("Server: FancallGateway/1.0\r\n")
 
