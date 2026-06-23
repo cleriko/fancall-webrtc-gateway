@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -27,6 +28,7 @@ type Room struct {
 	SIPBridge      *SIPBridge                  `json:"-"`
 	LocalTrack     *webrtc.TrackLocalStaticRTP `json:"-"`
 	RemoteTrack    *webrtc.TrackRemote         `json:"-"`
+	webrtcAPI      *webrtc.API                 `json:"-"`
 	mu             sync.RWMutex
 }
 
@@ -63,16 +65,31 @@ type CreateRoomResponse struct {
 
 // RoomManager manages all active rooms
 type RoomManager struct {
-	cfg   *Config
-	rooms map[string]*Room // room_id -> Room
-	mu    sync.RWMutex
+	cfg       *Config
+	rooms     map[string]*Room // room_id -> Room
+	mu        sync.RWMutex
+	webrtcAPI *webrtc.API // Share WebRTC SettingEngine with UDPMux
 }
 
 // NewRoomManager creates a new room manager
 func NewRoomManager(cfg *Config) *RoomManager {
+	settingEngine := webrtc.SettingEngine{}
+	
+	// Create global ICE UDP Mux on port 50000
+	mux, err := ice.NewMultiUDPMuxFromPort(50000)
+	if err != nil {
+		log.Printf("[RoomManager] Warning: Failed to create ICE UDP Mux on port 50000: %v. Ephemeral ports will be used.", err)
+	} else {
+		log.Printf("[RoomManager] Shared WebRTC ICE UDP Mux started on port 50000")
+		settingEngine.SetICEUDPMux(mux)
+	}
+
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
+
 	return &RoomManager{
-		cfg:   cfg,
-		rooms: make(map[string]*Room),
+		cfg:       cfg,
+		rooms:     make(map[string]*Room),
+		webrtcAPI: api,
 	}
 }
 
@@ -90,6 +107,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 		SignalingChan: make(chan SignalingMessage, 100),
+		webrtcAPI:     rm.webrtcAPI,
 	}
 
 	// Resolve PublicURL to get the public IP address for SIP routing
@@ -233,6 +251,13 @@ func (r *Room) GetLocalTrack() *webrtc.TrackLocalStaticRTP {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.LocalTrack
+}
+
+// GetWebRTCAPI returns the webrtc API safely
+func (r *Room) GetWebRTCAPI() *webrtc.API {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.webrtcAPI
 }
 
 // HandleCreateRoom handles HTTP POST /api/v1/rooms

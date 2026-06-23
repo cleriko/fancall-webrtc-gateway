@@ -60,34 +60,58 @@ func (s *SIPBridge) sipIP() string {
 
 // NewSIPBridge creates a new SIP bridge
 func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
-	// Find available UDP port for SIP
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, config.LocalPort))
+	// First, try binding to the preferred fixed SIP port 5062 and RTP port 5064
+	sipPort := 5062
+	rtpPort := 5064
+	
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, sipPort))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve SIP addr: %w", err)
 	}
-
+	
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to listen SIP UDP: %w", err)
+		// Port 5062 is in use, fallback to dynamic port allocation
+		log.Printf("[SIP] Fixed port 5062 in use or unavailable: %v. Falling back to dynamic port.", err)
+		addrDynamic, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
+		conn, err = net.ListenUDP("udp", addrDynamic)
+		if err != nil {
+			return nil, fmt.Errorf("failed to listen dynamic SIP UDP: %w", err)
+		}
 	}
-
+	
 	assignedSipPort := conn.LocalAddr().(*net.UDPAddr).Port
 	config.LocalPort = assignedSipPort
 
-	// Let OS assign a random port for RTP too
-	rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to resolve RTP addr: %w", err)
+	// Try binding RTP to 5064
+	var rtpConn *net.UDPConn
+	var assignedRtpPort int
+	
+	if assignedSipPort == 5062 {
+		rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
+		if err == nil {
+			rtpConn, err = net.ListenUDP("udp", rtpAddr)
+		}
 	}
-
-	rtpConn, err := net.ListenUDP("udp", rtpAddr)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to listen RTP UDP: %w", err)
+	
+	if rtpConn == nil || err != nil {
+		// Fallback to dynamic port allocation for RTP too
+		if assignedSipPort == 5062 {
+			log.Printf("[SIP] Fixed RTP port 5064 in use, falling back to dynamic port allocation")
+		}
+		rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to resolve RTP addr: %w", err)
+		}
+		rtpConn, err = net.ListenUDP("udp", rtpAddr)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to listen RTP UDP: %w", err)
+		}
 	}
-
-	assignedRtpPort := rtpConn.LocalAddr().(*net.UDPAddr).Port
+	
+	assignedRtpPort = rtpConn.LocalAddr().(*net.UDPAddr).Port
 
 	bridge := &SIPBridge{
 		config:  config,

@@ -218,7 +218,14 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 	}
 
 	// Create peer connection
-	pc, err := webrtc.NewPeerConnection(config)
+	api := room.GetWebRTCAPI()
+	var pc *webrtc.PeerConnection
+	var err error
+	if api != nil {
+		pc, err = api.NewPeerConnection(config)
+	} else {
+		pc, err = webrtc.NewPeerConnection(config)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to create peer connection: %w", err)
 	}
