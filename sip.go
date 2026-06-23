@@ -16,9 +16,9 @@ import (
 
 // SIPBridge handles SIP signaling for bridging WebRTC to Vobiz PSTN
 type SIPBridge struct {
-	config     SIPConfig
-	room       *Room
-	
+	config SIPConfig
+	room   *Room
+
 	mu         sync.RWMutex
 	callID     string
 	fromTag    string
@@ -26,24 +26,24 @@ type SIPBridge struct {
 	cseq       int
 	connected  bool
 	registered bool
-	
+
 	// UDP socket for SIP
 	conn       *net.UDPConn
 	remoteAddr *net.UDPAddr
-	
+
 	// Media channels
-	rtpIn      chan []byte   // WebRTC -> SIP
-	rtpOut     chan []byte   // SIP -> WebRTC
-	
+	rtpIn  chan []byte // WebRTC -> SIP
+	rtpOut chan []byte // SIP -> WebRTC
+
 	// RTP socket
-	rtpConn    *net.UDPConn
-	rtpPort    int
+	rtpConn *net.UDPConn
+	rtpPort int
 }
 
 // SIPConfig holds SIP endpoint configuration
 type SIPConfig struct {
 	LocalIP     string
-	LocalPort   int  // SIP signaling port
+	LocalPort   int // SIP signaling port
 	Username    string
 	Password    string
 	Domain      string
@@ -57,32 +57,36 @@ func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve SIP addr: %w", err)
 	}
-	
+
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen SIP UDP: %w", err)
 	}
 
-	// RTP port is SIP port + 2
-	rtpPort := config.LocalPort + 2
-	rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
+	assignedSipPort := conn.LocalAddr().(*net.UDPAddr).Port
+	config.LocalPort = assignedSipPort
+
+	// Let OS assign a random port for RTP too
+	rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to resolve RTP addr: %w", err)
 	}
-	
+
 	rtpConn, err := net.ListenUDP("udp", rtpAddr)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to listen RTP UDP: %w", err)
 	}
 
+	assignedRtpPort := rtpConn.LocalAddr().(*net.UDPAddr).Port
+
 	bridge := &SIPBridge{
 		config:  config,
 		room:    room,
 		conn:    conn,
 		rtpConn: rtpConn,
-		rtpPort: rtpPort,
+		rtpPort: assignedRtpPort,
 		rtpIn:   make(chan []byte, 200),
 		rtpOut:  make(chan []byte, 200),
 	}
@@ -94,13 +98,13 @@ func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
 func (s *SIPBridge) Start() error {
 	// Start SIP message handler
 	go s.sipMessageLoop()
-	
+
 	// Start RTP receiver
 	go s.rtpReceiveLoop()
-	
+
 	// Start media bridge
 	go s.mediaBridgeLoop()
-	
+
 	// Send REGISTER
 	go func() {
 		time.Sleep(100 * time.Millisecond)
@@ -108,7 +112,7 @@ func (s *SIPBridge) Start() error {
 			log.Printf("[SIP] Initial registration failed: %v", err)
 		}
 	}()
-	
+
 	log.Printf("[SIP] Bridge started on %s:%d (RTP: %d)", s.config.LocalIP, s.config.LocalPort, s.rtpPort)
 	return nil
 }
@@ -133,13 +137,14 @@ func (s *SIPBridge) sipMessageLoop() {
 	for {
 		n, remoteAddr, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
-			if s.room.GetStatus() == RoomStatusEnded || s.room.GetStatus() == RoomStatusFailed {
+			if s.room.GetStatus() == RoomStatusEnded || s.room.GetStatus() == RoomStatusFailed || strings.Contains(err.Error(), "use of closed network connection") {
 				return
 			}
 			log.Printf("[SIP] Read error: %v", err)
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		
+
 		msg := string(buf[:n])
 		go s.handleSIPMessage(msg, remoteAddr)
 	}
@@ -151,9 +156,9 @@ func (s *SIPBridge) handleSIPMessage(msg string, remoteAddr *net.UDPAddr) {
 	if len(lines) == 0 {
 		return
 	}
-	
+
 	firstLine := lines[0]
-	
+
 	if strings.HasPrefix(firstLine, "INVITE") {
 		s.handleInvite(msg, lines, remoteAddr)
 	} else if strings.HasPrefix(firstLine, "ACK") {
@@ -175,24 +180,24 @@ func (s *SIPBridge) handleSIPMessage(msg string, remoteAddr *net.UDPAddr) {
 func (s *SIPBridge) handleInvite(msg string, lines []string, remoteAddr *net.UDPAddr) {
 	log.Printf("[SIP] INVITE received from %s", remoteAddr)
 	s.remoteAddr = remoteAddr
-	
+
 	// Extract Call-ID and From tag
 	callID := extractHeader(lines, "Call-ID")
 	from := extractHeader(lines, "From")
-	
+
 	s.mu.Lock()
 	s.callID = callID
 	s.fromTag = extractTag(from)
 	s.toTag = generateTag()
 	s.cseq = extractCSeq(lines)
 	s.mu.Unlock()
-	
+
 	// Send 100 Trying
 	s.sendResponse("100 Trying", lines, remoteAddr)
-	
+
 	// Send 180 Ringing
 	s.sendResponse("180 Ringing", lines, remoteAddr)
-	
+
 	// Send 200 OK with SDP
 	sdpAnswer := s.createSDPAnswer()
 	ok := s.buildResponse("200 OK", lines)
@@ -200,15 +205,15 @@ func (s *SIPBridge) handleInvite(msg string, lines []string, remoteAddr *net.UDP
 	ok += fmt.Sprintf("Content-Length: %d\r\n", len(sdpAnswer))
 	ok += "\r\n"
 	ok += sdpAnswer
-	
+
 	s.sendRaw(ok, remoteAddr)
-	
+
 	s.mu.Lock()
 	s.connected = true
 	s.mu.Unlock()
-	
+
 	log.Printf("[SIP] Sent 200 OK, call connected")
-	
+
 	// Notify room
 	select {
 	case s.room.SignalingChan <- SignalingMessage{Type: "connected", RoomID: s.room.ID}:
@@ -224,14 +229,14 @@ func (s *SIPBridge) handleAck(msg string, lines []string, remoteAddr *net.UDPAdd
 // handleBye processes BYE
 func (s *SIPBridge) handleBye(msg string, lines []string, remoteAddr *net.UDPAddr) {
 	log.Printf("[SIP] BYE received")
-	
+
 	// Send 200 OK
 	s.sendResponse("200 OK", lines, remoteAddr)
-	
+
 	s.mu.Lock()
 	s.connected = false
 	s.mu.Unlock()
-	
+
 	// Notify room
 	s.room.SetStatus(RoomStatusEnded)
 	select {
@@ -258,7 +263,7 @@ func (s *SIPBridge) register() error {
 	registerURI := fmt.Sprintf("sip:%s", s.config.Domain)
 	fromURI := fmt.Sprintf("sip:%s@%s", s.config.Username, s.config.Domain)
 	contactURI := fmt.Sprintf("sip:%s@%s:%d", s.config.Username, s.config.LocalIP, s.config.LocalPort)
-	
+
 	msg := fmt.Sprintf("REGISTER %s SIP/2.0\r\n", registerURI)
 	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", s.config.LocalIP, s.config.LocalPort, generateBranch())
 	msg += fmt.Sprintf("From: \"%s\" <%s>;tag=%s\r\n", s.config.DisplayName, fromURI, generateTag())
@@ -270,17 +275,17 @@ func (s *SIPBridge) register() error {
 	msg += fmt.Sprintf("Expires: 3600\r\n")
 	msg += fmt.Sprintf("Content-Length: 0\r\n")
 	msg += "\r\n"
-	
+
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:5060", s.config.Domain))
 	if err != nil {
 		return err
 	}
-	
+
 	_, err = s.conn.WriteToUDP([]byte(msg), addr)
 	if err != nil {
 		return err
 	}
-	
+
 	log.Printf("[SIP] REGISTER sent to %s", addr)
 	return nil
 }
@@ -290,23 +295,23 @@ func (s *SIPBridge) Call(toNumber string) error {
 	if !s.isRegistered() {
 		return fmt.Errorf("not registered")
 	}
-	
+
 	// Build INVITE
 	uri := fmt.Sprintf("sip:%s@%s", toNumber, s.config.Domain)
 	fromURI := fmt.Sprintf("sip:%s@%s", s.config.Username, s.config.Domain)
 	contactURI := fmt.Sprintf("sip:%s@%s:%d", s.config.Username, s.config.LocalIP, s.config.LocalPort)
-	
+
 	callID := generateCallID()
 	fromTag := generateTag()
-	
+
 	s.mu.Lock()
 	s.callID = callID
 	s.fromTag = fromTag
 	s.cseq = 1
 	s.mu.Unlock()
-	
+
 	sdp := s.createSDPOffer()
-	
+
 	msg := fmt.Sprintf("INVITE %s SIP/2.0\r\n", uri)
 	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", s.config.LocalIP, s.config.LocalPort, generateBranch())
 	msg += fmt.Sprintf("From: \"%s\" <%s>;tag=%s\r\n", s.config.DisplayName, fromURI, fromTag)
@@ -318,17 +323,17 @@ func (s *SIPBridge) Call(toNumber string) error {
 	msg += fmt.Sprintf("Content-Length: %d\r\n", len(sdp))
 	msg += "\r\n"
 	msg += sdp
-	
+
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:5060", s.config.Domain))
 	if err != nil {
 		return err
 	}
-	
+
 	_, err = s.conn.WriteToUDP([]byte(msg), addr)
 	if err != nil {
 		return err
 	}
-	
+
 	log.Printf("[SIP] INVITE sent to %s", toNumber)
 	return nil
 }
@@ -347,9 +352,9 @@ func (s *SIPBridge) Hangup() {
 	s.cseq = cseq
 	s.connected = false
 	s.mu.Unlock()
-	
+
 	fromURI := fmt.Sprintf("sip:%s@%s", s.config.Username, s.config.Domain)
-	
+
 	msg := fmt.Sprintf("BYE sip:%s@%s SIP/2.0\r\n", s.config.Domain, s.config.Domain)
 	msg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", s.config.LocalIP, s.config.LocalPort, generateBranch())
 	msg += fmt.Sprintf("From: <%s>;tag=%s\r\n", fromURI, fromTag)
@@ -358,11 +363,11 @@ func (s *SIPBridge) Hangup() {
 	msg += fmt.Sprintf("CSeq: %d BYE\r\n", cseq)
 	msg += fmt.Sprintf("Content-Length: 0\r\n")
 	msg += "\r\n"
-	
+
 	if s.remoteAddr != nil {
 		s.sendRaw(msg, s.remoteAddr)
 	}
-	
+
 	log.Printf("[SIP] BYE sent")
 }
 
@@ -372,15 +377,16 @@ func (s *SIPBridge) rtpReceiveLoop() {
 	for {
 		n, _, err := s.rtpConn.ReadFromUDP(buf)
 		if err != nil {
-			if s.room.GetStatus() == RoomStatusEnded || s.room.GetStatus() == RoomStatusFailed {
+			if s.room.GetStatus() == RoomStatusEnded || s.room.GetStatus() == RoomStatusFailed || strings.Contains(err.Error(), "use of closed network connection") {
 				return
 			}
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		
+
 		packet := make([]byte, n)
 		copy(packet, buf[:n])
-		
+
 		select {
 		case s.rtpOut <- packet:
 		default:
@@ -391,7 +397,7 @@ func (s *SIPBridge) rtpReceiveLoop() {
 // mediaBridgeLoop bridges media between WebRTC and SIP
 func (s *SIPBridge) mediaBridgeLoop() {
 	log.Printf("[SIP] Media bridge started for room %s", s.room.ID)
-	
+
 	// WebRTC -> SIP
 	go func() {
 		for packet := range s.rtpIn {
@@ -408,7 +414,7 @@ func (s *SIPBridge) mediaBridgeLoop() {
 			}
 		}
 	}()
-	
+
 	// SIP -> WebRTC (handled by reading from rtpOut in room)
 }
 
@@ -445,26 +451,26 @@ func (s *SIPBridge) buildResponse(status string, requestLines []string) string {
 	to := extractHeader(requestLines, "To")
 	callID := extractHeader(requestLines, "Call-ID")
 	cseq := extractHeader(requestLines, "CSeq")
-	
+
 	s.mu.RLock()
 	toTag := s.toTag
 	s.mu.RUnlock()
-	
+
 	resp := fmt.Sprintf("SIP/2.0 %s\r\n", status)
 	resp += fmt.Sprintf("Via: %s\r\n", via)
 	resp += fmt.Sprintf("From: %s\r\n", from)
-	
+
 	if toTag != "" && !strings.Contains(to, "tag=") {
 		resp += fmt.Sprintf("To: %s;tag=%s\r\n", to, toTag)
 	} else {
 		resp += fmt.Sprintf("To: %s\r\n", to)
 	}
-	
+
 	resp += fmt.Sprintf("Call-ID: %s\r\n", callID)
 	resp += fmt.Sprintf("CSeq: %s\r\n", cseq)
 	resp += fmt.Sprintf("Contact: <sip:%s@%s:%d>\r\n", s.config.Username, s.config.LocalIP, s.config.LocalPort)
 	resp += fmt.Sprintf("Server: FancallGateway/1.0\r\n")
-	
+
 	return resp
 }
 

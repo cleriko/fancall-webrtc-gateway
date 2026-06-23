@@ -12,11 +12,11 @@ import (
 
 // SignalingMessage represents a WebSocket signaling message
 type SignalingMessage struct {
-	Type      string                     `json:"type"`      // offer, answer, ice-candidate, join, leave, error
+	Type      string                     `json:"type"` // offer, answer, ice-candidate, join, leave, error
 	RoomID    string                     `json:"room_id"`
 	Token     string                     `json:"token"`
 	SDP       *webrtc.SessionDescription `json:"sdp,omitempty"`
-	Candidate *webrtc.ICECandidateInit     `json:"candidate,omitempty"`
+	Candidate *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
 	Error     string                     `json:"error,omitempty"`
 }
 
@@ -28,7 +28,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upgrader websocket.
 	if roomID == "" {
 		roomID = r.URL.Query().Get("roomId")
 	}
-	
+
 	if token == "" || roomID == "" {
 		http.Error(w, `{"error":"token and room_id/roomId required"}`, http.StatusBadRequest)
 		return
@@ -108,7 +108,7 @@ func handleJoin(room *Room, msg *SignalingMessage) error {
 	}
 
 	room.SetStatus(RoomStatusSignaling)
-	
+
 	// Notify client that join was successful
 	room.SignalingChan <- SignalingMessage{
 		Type:   "joined",
@@ -140,14 +140,33 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 		return fmt.Errorf("failed to create peer connection: %w", err)
 	}
 
+	// Create local audio track (PCMU for G.711 / Vobiz compatibility)
+	localTrack, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU},
+		"audio",
+		"pion",
+	)
+	if err != nil {
+		pc.Close()
+		return fmt.Errorf("failed to create local audio track: %w", err)
+	}
+
+	// Add track to PeerConnection to send audio to fan
+	_, err = pc.AddTrack(localTrack)
+	if err != nil {
+		pc.Close()
+		return fmt.Errorf("failed to add local track to peer connection: %w", err)
+	}
+
 	room.mu.Lock()
 	room.PeerConnection = pc
+	room.LocalTrack = localTrack
 	room.mu.Unlock()
 
 	// Set up track handlers
 	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		log.Printf("[WebRTC] Track received: %s (%s)", track.ID(), track.Kind().String())
-		
+
 		room.mu.Lock()
 		room.RemoteTrack = track
 		room.mu.Unlock()
@@ -160,7 +179,7 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		log.Printf("[WebRTC] ICE state changed: %s", state.String())
-		
+
 		switch state {
 		case webrtc.ICEConnectionStateConnected:
 			room.SetStatus(RoomStatusConnected)
@@ -181,7 +200,7 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 		if candidate == nil {
 			return
 		}
-		
+
 		init := candidate.ToJSON()
 		room.SignalingChan <- SignalingMessage{
 			Type:      "ice-candidate",
@@ -263,7 +282,7 @@ func handleLeave(room *Room, msg *SignalingMessage) error {
 	room.SetStatus(RoomStatusEnding)
 	room.Close()
 	room.SetStatus(RoomStatusEnded)
-	
+
 	room.SignalingChan <- SignalingMessage{
 		Type:   "left",
 		RoomID: room.ID,
@@ -272,7 +291,7 @@ func handleLeave(room *Room, msg *SignalingMessage) error {
 	return nil
 }
 
-// BridgeAudioToSIP bridges WebRTC audio track to SIP
+// BridgeAudioToSIP bridges WebRTC audio track to SIP and vice-versa
 func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 	log.Printf("[Bridge] Starting audio bridge for room %s", room.ID)
 
@@ -308,8 +327,32 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 	}()
 
 	// Read RTP packets from SIP and forward to WebRTC
-	// This would need a TrackLocal to write back to the peer connection
-	// For now, the SIP bridge handles receiving in its own loop
+	go func() {
+		localTrack := room.GetLocalTrack()
+		if localTrack == nil {
+			log.Printf("[Bridge] No local WebRTC track available for room %s", room.ID)
+			return
+		}
+
+		for {
+			if room.GetStatus() == RoomStatusEnded || room.GetStatus() == RoomStatusFailed {
+				break
+			}
+
+			packet, ok := sipBridge.ReadRTP()
+			if !ok {
+				continue
+			}
+
+			// Forward packet directly to WebRTC
+			_, err := localTrack.Write(packet)
+			if err != nil {
+				log.Printf("[Bridge] Write RTP to WebRTC error: %v", err)
+			}
+		}
+		log.Printf("[Bridge] SIP->WebRTC bridge ended for room %s", room.ID)
+	}()
+
 	log.Printf("[Bridge] Audio bridge started for room %s", room.ID)
 }
 

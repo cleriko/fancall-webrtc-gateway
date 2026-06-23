@@ -14,18 +14,18 @@ import (
 
 // Room represents a fan-celebrity call session
 type Room struct {
-	ID             string                    `json:"id"`
-	SessionID      string                    `json:"session_id"`
-	FanID          string                    `json:"fan_id"`
-	CelebrityID    string                    `json:"celebrity_id"`
-	Status         RoomStatus                `json:"status"`
-	CreatedAt      time.Time                 `json:"created_at"`
-	UpdatedAt      time.Time                 `json:"updated_at"`
-	PeerConnection *webrtc.PeerConnection    `json:"-"`
-	SignalingChan  chan SignalingMessage     `json:"-"`
-	SIPBridge      *SIPBridge                `json:"-"`
+	ID             string                      `json:"id"`
+	SessionID      string                      `json:"session_id"`
+	FanID          string                      `json:"fan_id"`
+	CelebrityID    string                      `json:"celebrity_id"`
+	Status         RoomStatus                  `json:"status"`
+	CreatedAt      time.Time                   `json:"created_at"`
+	UpdatedAt      time.Time                   `json:"updated_at"`
+	PeerConnection *webrtc.PeerConnection      `json:"-"`
+	SignalingChan  chan SignalingMessage       `json:"-"`
+	SIPBridge      *SIPBridge                  `json:"-"`
 	LocalTrack     *webrtc.TrackLocalStaticRTP `json:"-"`
-	RemoteTrack    *webrtc.TrackRemote       `json:"-"`
+	RemoteTrack    *webrtc.TrackRemote         `json:"-"`
 	mu             sync.RWMutex
 }
 
@@ -161,13 +161,13 @@ func (rm *RoomManager) scheduleRoomCleanup(roomID string, duration time.Duration
 	if duration <= 0 {
 		duration = 1 * time.Hour
 	}
-	
+
 	time.Sleep(duration)
-	
+
 	rm.mu.RLock()
 	_, exists := rm.rooms[roomID]
 	rm.mu.RUnlock()
-	
+
 	if exists {
 		log.Printf("[RoomManager] Auto-cleaning room %s after %v", roomID, duration)
 		rm.DeleteRoom(roomID)
@@ -212,6 +212,13 @@ func (r *Room) GetSIPBridge() *SIPBridge {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.SIPBridge
+}
+
+// GetLocalTrack returns the local audio track safely
+func (r *Room) GetLocalTrack() *webrtc.TrackLocalStaticRTP {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.LocalTrack
 }
 
 // HandleCreateRoom handles HTTP POST /api/v1/rooms
