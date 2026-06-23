@@ -412,8 +412,12 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 				remoteIP := sipBridge.remoteRtpIP
 				remotePort := sipBridge.remoteRtpPort
 				sipBridge.mu.RUnlock()
-				log.Printf("[Bridge] WebRTC -> SIP: Forwarded %d RTP packets to %s:%d", packetCount, remoteIP, remotePort)
+				log.Printf("[Bridge] WebRTC -> SIP: Forwarded %d RTP packets to %s:%d. Original PT=%d, SSRC=%d, TS=%d", 
+					packetCount, remoteIP, remotePort, rtpPacket.PayloadType, rtpPacket.SSRC, rtpPacket.Timestamp)
 			}
+
+			// Explicitly normalize payload type to 0 (PCMU) for Vobiz compatibility
+			rtpPacket.PayloadType = 0
 
 			// Serialize RTP packet
 			buf, err := rtpPacket.Marshal()
@@ -445,10 +449,18 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 				continue
 			}
 
+			// Ensure the packet size is at least the size of standard RTP header (12 bytes)
+			if len(packet) < 12 {
+				continue
+			}
+
 			packetCount++
 			if packetCount%100 == 0 {
-				log.Printf("[Bridge] SIP -> WebRTC: Forwarded %d RTP packets to WebRTC localTrack", packetCount)
+				log.Printf("[Bridge] SIP -> WebRTC: Forwarded %d RTP packets to WebRTC localTrack. Source length=%d", packetCount, len(packet))
 			}
+
+			// Normalize the Payload Type of the outgoing WebRTC packet to PCMU (0)
+			packet[1] = (packet[1] & 0x80) | 0
 
 			// Forward packet directly to WebRTC
 			_, err := localTrack.Write(packet)
