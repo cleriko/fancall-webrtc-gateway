@@ -61,6 +61,7 @@ type CreateRoomResponse struct {
 	ICEServers   []webrtc.ICEServer `json:"ice_servers"`
 	SignalingURL string             `json:"signaling_url"`
 	Status       RoomStatus         `json:"status"`
+	SIPURI       string             `json:"sip_uri,omitempty"`
 }
 
 // RoomManager manages all active rooms
@@ -101,7 +102,19 @@ func NewRoomManager(cfg *Config) *RoomManager {
 		log.Printf("[RoomManager] Configured WebRTC SettingEngine with NAT 1:1 Host IP: %s", publicIP)
 	}
 
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
+	mediaEngine := &webrtc.MediaEngine{}
+	if err = mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypePCMU,
+			ClockRate: 8000,
+			Channels:  1,
+		},
+		PayloadType: 0,
+	}, webrtc.RTPCodecTypeAudio); err != nil {
+		log.Printf("[RoomManager] Failed to register PCMU codec: %v", err)
+	}
+
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine), webrtc.WithMediaEngine(mediaEngine))
 
 	return &RoomManager{
 		cfg:       cfg,
@@ -142,7 +155,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 	// Create SIP bridge for Vobiz integration
 	// The SIP bridge will listen for incoming calls from Vobiz
 	sipConfig := SIPConfig{
-		LocalIP:     "187.127.139.107",
+		LocalIP:     "0.0.0.0",
 		LocalPort:   0, // Let system assign port
 		PublicIP:    publicIP,
 		Username:    fmt.Sprintf("fan_%s", req.FanID),
@@ -151,6 +164,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		DisplayName: "Fancall Fan",
 	}
 
+	sipURI := ""
 	sipBridge, err := NewSIPBridge(sipConfig, room)
 	if err != nil {
 		log.Printf("[RoomManager] Failed to create SIP bridge: %v", err)
@@ -159,6 +173,10 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		room.SIPBridge = sipBridge
 		if err := sipBridge.Start(); err != nil {
 			log.Printf("[RoomManager] Failed to start SIP bridge: %v", err)
+		} else {
+			// Construct the SIP URI using the assigned UDP port and resolved public IP/SIP IP
+			sipURI = fmt.Sprintf("sip:%s@%s:%d", roomID, sipBridge.sipIP(), sipBridge.config.LocalPort)
+			log.Printf("[RoomManager] Created SIP URI for Vobiz answer routing: %s", sipURI)
 		}
 	}
 
@@ -178,6 +196,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		ICEServers:   rm.cfg.ICEServers,
 		SignalingURL: fmt.Sprintf("wss://%s%s", rm.cfg.PublicURL, rm.cfg.WebSocketPath),
 		Status:       RoomStatusCreated,
+		SIPURI:       sipURI,
 	}, nil
 }
 
