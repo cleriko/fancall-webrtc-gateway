@@ -84,6 +84,23 @@ func NewRoomManager(cfg *Config) *RoomManager {
 		settingEngine.SetICEUDPMux(mux)
 	}
 
+	// Resolve PublicURL to get the public IP address for NAT 1:1 mapping
+	publicIP := "187.127.139.107"
+	if cfg.PublicURL != "" {
+		ips, err := net.LookupIP(cfg.PublicURL)
+		if err == nil && len(ips) > 0 {
+			publicIP = ips[0].String()
+			log.Printf("[RoomManager] Resolved PublicURL %s to IP for WebRTC: %s", cfg.PublicURL, publicIP)
+		} else {
+			log.Printf("[RoomManager] Warning: Failed to resolve PublicURL %s to IP for WebRTC, falling back to 0.0.0.0", cfg.PublicURL)
+		}
+	}
+
+	if publicIP != "187.127.139.107" {
+		settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
+		log.Printf("[RoomManager] Configured WebRTC SettingEngine with NAT 1:1 Host IP: %s", publicIP)
+	}
+
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
 
 	return &RoomManager{
@@ -111,7 +128,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 	}
 
 	// Resolve PublicURL to get the public IP address for SIP routing
-	publicIP := "0.0.0.0"
+	publicIP := "187.127.139.107"
 	if rm.cfg.PublicURL != "" {
 		ips, err := net.LookupIP(rm.cfg.PublicURL)
 		if err == nil && len(ips) > 0 {
@@ -125,7 +142,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 	// Create SIP bridge for Vobiz integration
 	// The SIP bridge will listen for incoming calls from Vobiz
 	sipConfig := SIPConfig{
-		LocalIP:     "0.0.0.0",
+		LocalIP:     "187.127.139.107",
 		LocalPort:   0, // Let system assign port
 		PublicIP:    publicIP,
 		Username:    fmt.Sprintf("fan_%s", req.FanID),
