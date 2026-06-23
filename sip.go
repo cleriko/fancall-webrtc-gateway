@@ -63,12 +63,12 @@ func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
 	// First, try binding to the preferred fixed SIP port 5062 and RTP port 5064
 	sipPort := 5062
 	rtpPort := 5064
-	
+
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, sipPort))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve SIP addr: %w", err)
 	}
-	
+
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		// Port 5062 is in use, fallback to dynamic port allocation
@@ -79,21 +79,21 @@ func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
 			return nil, fmt.Errorf("failed to listen dynamic SIP UDP: %w", err)
 		}
 	}
-	
+
 	assignedSipPort := conn.LocalAddr().(*net.UDPAddr).Port
 	config.LocalPort = assignedSipPort
 
 	// Try binding RTP to 5064
 	var rtpConn *net.UDPConn
 	var assignedRtpPort int
-	
+
 	if assignedSipPort == 5062 {
 		rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
 		if err == nil {
 			rtpConn, err = net.ListenUDP("udp", rtpAddr)
 		}
 	}
-	
+
 	if rtpConn == nil || err != nil {
 		// Fallback to dynamic port allocation for RTP too
 		if assignedSipPort == 5062 {
@@ -110,7 +110,7 @@ func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
 			return nil, fmt.Errorf("failed to listen RTP UDP: %w", err)
 		}
 	}
-	
+
 	assignedRtpPort = rtpConn.LocalAddr().(*net.UDPAddr).Port
 
 	bridge := &SIPBridge{

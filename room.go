@@ -74,7 +74,7 @@ type RoomManager struct {
 // NewRoomManager creates a new room manager
 func NewRoomManager(cfg *Config) *RoomManager {
 	settingEngine := webrtc.SettingEngine{}
-	
+
 	// Create global ICE UDP Mux on port 50000
 	mux, err := ice.NewMultiUDPMuxFromPort(50000)
 	if err != nil {
