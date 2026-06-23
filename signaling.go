@@ -25,9 +25,12 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upgrader websocket.
 	// Validate token from query param
 	token := r.URL.Query().Get("token")
 	roomID := r.URL.Query().Get("room_id")
+	if roomID == "" {
+		roomID = r.URL.Query().Get("roomId")
+	}
 	
 	if token == "" || roomID == "" {
-		http.Error(w, `{"error":"token and room_id required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"token and room_id/roomId required"}`, http.StatusBadRequest)
 		return
 	}
 

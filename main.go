@@ -46,7 +46,7 @@ func main() {
 
 	// Setup HTTP routes
 	mux := http.NewServeMux()
-	
+
 	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -87,7 +87,7 @@ func main() {
 	// Setup middleware chain
 	apiKeyMiddleware := NewAPIKeyMiddleware([]string{cfg.APIKey})
 	rateLimiter := newRateLimiter(100, 1*time.Minute)
-	
+
 	chain := recoveryMiddleware(
 		loggingMiddleware(
 			corsMiddleware(
