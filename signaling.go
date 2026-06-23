@@ -255,7 +255,7 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 
 	// Set up track handlers
 	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		log.Printf("[WebRTC] Track received: %s (%s)", track.ID(), track.Kind().String())
+		log.Printf("[WebRTC] Track received: %s (%s). Codec: %s", track.ID(), track.Kind().String(), track.Codec().MimeType)
 
 		room.mu.Lock()
 		room.RemoteTrack = track
