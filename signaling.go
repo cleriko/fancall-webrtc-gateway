@@ -394,6 +394,7 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 
 	// Read RTP packets from WebRTC and forward to SIP
 	go func() {
+		var packetCount int
 		for {
 			if room.GetStatus() == RoomStatusEnded || room.GetStatus() == RoomStatusFailed {
 				break
@@ -403,6 +404,15 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 			if err != nil {
 				log.Printf("[Bridge] Read RTP error: %v", err)
 				break
+			}
+
+			packetCount++
+			if packetCount%100 == 0 {
+				sipBridge.mu.RLock()
+				remoteIP := sipBridge.remoteRtpIP
+				remotePort := sipBridge.remoteRtpPort
+				sipBridge.mu.RUnlock()
+				log.Printf("[Bridge] WebRTC -> SIP: Forwarded %d RTP packets to %s:%d", packetCount, remoteIP, remotePort)
 			}
 
 			// Serialize RTP packet
@@ -424,6 +434,7 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 			return
 		}
 
+		var packetCount int
 		for {
 			if room.GetStatus() == RoomStatusEnded || room.GetStatus() == RoomStatusFailed {
 				break
@@ -432,6 +443,11 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 			packet, ok := sipBridge.ReadRTP()
 			if !ok {
 				continue
+			}
+
+			packetCount++
+			if packetCount%100 == 0 {
+				log.Printf("[Bridge] SIP -> WebRTC: Forwarded %d RTP packets to WebRTC localTrack", packetCount)
 			}
 
 			// Forward packet directly to WebRTC

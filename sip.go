@@ -420,14 +420,20 @@ func (s *SIPBridge) Hangup() {
 // rtpReceiveLoop receives RTP packets from SIP side
 func (s *SIPBridge) rtpReceiveLoop() {
 	buf := make([]byte, 1500)
+	var packetCount int
 	for {
-		n, _, err := s.rtpConn.ReadFromUDP(buf)
+		n, addr, err := s.rtpConn.ReadFromUDP(buf)
 		if err != nil {
 			if s.room.GetStatus() == RoomStatusEnded || s.room.GetStatus() == RoomStatusFailed || strings.Contains(err.Error(), "use of closed network connection") {
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
 			continue
+		}
+
+		packetCount++
+		if packetCount%100 == 0 {
+			log.Printf("[SIP] RTP Receive Loop: Received %d packets from %s", packetCount, addr)
 		}
 
 		packet := make([]byte, n)
