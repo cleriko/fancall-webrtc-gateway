@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -86,13 +89,20 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := r.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+}
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &responseRecorder{ResponseWriter: w, statusCode: 200}
-		
+
 		next.ServeHTTP(recorder, r)
-		
+
 		duration := time.Since(start)
 		log.Printf("[HTTP] %s %s %d %s %d bytes",
 			r.Method,
@@ -113,12 +123,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
-		
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -163,10 +173,10 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 func (rl *rateLimiter) isAllowed(clientIP string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
 	now := time.Now()
 	cutoff := now.Add(-rl.window)
-	
+
 	// Clean old requests
 	var valid []time.Time
 	for _, t := range rl.requests[clientIP] {
@@ -174,12 +184,12 @@ func (rl *rateLimiter) isAllowed(clientIP string) bool {
 			valid = append(valid, t)
 		}
 	}
-	
+
 	if len(valid) >= rl.limit {
 		rl.requests[clientIP] = valid
 		return false
 	}
-	
+
 	valid = append(valid, now)
 	rl.requests[clientIP] = valid
 	return true
@@ -191,14 +201,14 @@ func (rl *rateLimiter) Middleware(next http.Handler) http.Handler {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 			clientIP = strings.Split(fwd, ",")[0]
 		}
-		
+
 		if !rl.isAllowed(clientIP) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			w.Write([]byte(`{"error":"rate limit exceeded"}`))
 			return
 		}
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
