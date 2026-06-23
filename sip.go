@@ -38,6 +38,10 @@ type SIPBridge struct {
 	// RTP socket
 	rtpConn *net.UDPConn
 	rtpPort int
+
+	// Remote RTP target parsed from SDP
+	remoteRtpIP   string
+	remoteRtpPort int
 }
 
 // SIPConfig holds SIP endpoint configuration
@@ -217,12 +221,19 @@ func (s *SIPBridge) handleInvite(msg string, lines []string, remoteAddr *net.UDP
 	callID := extractHeader(lines, "Call-ID")
 	from := extractHeader(lines, "From")
 
+	// Parse remote media IP and port from incoming SDP offer
+	remoteRtpIP, remoteRtpPort := parseSDP(msg)
+
 	s.mu.Lock()
 	s.callID = callID
 	s.fromTag = extractTag(from)
 	s.toTag = generateTag()
 	s.cseq = extractCSeq(lines)
+	s.remoteRtpIP = remoteRtpIP
+	s.remoteRtpPort = remoteRtpPort
 	s.mu.Unlock()
+
+	log.Printf("[SIP] Parsed remote RTP destination from SDP: %s:%d", remoteRtpIP, remoteRtpPort)
 
 	// Send 100 Trying
 	s.sendResponse("100 Trying", lines, remoteAddr)
@@ -440,10 +451,22 @@ func (s *SIPBridge) mediaBridgeLoop() {
 				continue
 			}
 			// Forward to SIP remote
-			if s.remoteAddr != nil {
+			s.mu.RLock()
+			remoteIP := s.remoteRtpIP
+			remotePort := s.remoteRtpPort
+			s.mu.RUnlock()
+
+			if remoteIP != "" && remotePort != 0 {
+				rtpAddr := &net.UDPAddr{
+					IP:   net.ParseIP(remoteIP),
+					Port: remotePort,
+				}
+				s.rtpConn.WriteToUDP(packet, rtpAddr)
+			} else if s.remoteAddr != nil {
+				// Fallback if SDP parsing failed or we don't have remote RTP details
 				rtpAddr := &net.UDPAddr{
 					IP:   s.remoteAddr.IP,
-					Port: s.remoteAddr.Port + 2, // RTP port
+					Port: s.remoteAddr.Port + 2, // RTP port fallback
 				}
 				s.rtpConn.WriteToUDP(packet, rtpAddr)
 			}
@@ -610,4 +633,24 @@ func generateTag() string {
 
 func generateCallID() string {
 	return fmt.Sprintf("%d@%s", time.Now().UnixNano(), generateTag())
+}
+
+// parseSDP parses remote media IP and Port from SDP body
+func parseSDP(msg string) (string, int) {
+	var ip string
+	var port int
+	lines := strings.Split(msg, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "c=IN IP4 ") {
+			ip = strings.TrimPrefix(line, "c=IN IP4 ")
+		} else if strings.HasPrefix(line, "m=audio ") {
+			// Format: m=audio 10242 RTP/AVP 0 ...
+			parts := strings.Fields(line)
+			if len(parts) > 1 {
+				fmt.Sscanf(parts[1], "%d", &port)
+			}
+		}
+	}
+	return ip, port
 }
