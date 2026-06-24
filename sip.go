@@ -251,19 +251,18 @@ func (s *SIPBridge) handleInvite(msg string, lines []string, remoteAddr *net.UDP
 
 	s.sendRaw(ok, remoteAddr)
 
-	s.mu.Lock()
-	s.connected = true
-	s.mu.Unlock()
-
-	log.Printf("[SIP] Sent 200 OK, call connected")
-
-	// Notify room
-	s.room.SendSignalingMessage(SignalingMessage{Type: "connected", RoomID: s.room.ID})
+	log.Printf("[SIP] Sent 200 OK, handshake pending ACK")
 }
 
 // handleAck processes ACK
 func (s *SIPBridge) handleAck(msg string, lines []string, remoteAddr *net.UDPAddr) {
-	log.Printf("[SIP] ACK received")
+	log.Printf("[SIP] ACK received - call fully established")
+	s.mu.Lock()
+	s.connected = true
+	s.mu.Unlock()
+
+	// Notify room that the call is now fully connected (PSTN answered and handshake completed!)
+	s.room.SendSignalingMessage(SignalingMessage{Type: "connected", RoomID: s.room.ID})
 }
 
 // handleBye processes BYE
@@ -462,22 +461,49 @@ func (s *SIPBridge) mediaBridgeLoop() {
 					Port: remotePort,
 				}
 				s.rtpConn.WriteToUDP(packet, rtpAddr)
-			} else if s.remoteAddr != nil {
-				// Fallback if SDP parsing failed or we don't have remote RTP details
-				rtpAddr := &net.UDPAddr{
-					IP:   s.remoteAddr.IP,
-					Port: s.remoteAddr.Port + 2, // RTP port fallback
-				}
-				s.rtpConn.WriteToUDP(packet, rtpAddr)
 			}
 		}
 	}()
 
-	// SIP -> WebRTC (handled by reading from rtpOut in room)
+	// SIP -> WebRTC
+	go func() {
+		var packetCount int
+		for packet := range s.rtpOut {
+			if !s.isConnected() {
+				continue
+			}
+			localTrack := s.room.GetLocalTrack()
+			if localTrack != nil {
+				// Ensure the packet size is at least the size of standard RTP header (12 bytes)
+				if len(packet) < 12 {
+					continue
+				}
+
+				packetCount++
+				if packetCount%100 == 0 {
+					log.Printf("[SIP] SIP -> WebRTC: Forwarded %d RTP packets to WebRTC localTrack. Length=%d", packetCount, len(packet))
+				}
+
+				// Normalize the Payload Type of the outgoing WebRTC packet to PCMU (0)
+				packet[1] = (packet[1] & 0x80) | 0
+
+				// Forward packet directly to WebRTC
+				_, err := localTrack.Write(packet)
+				if err != nil {
+					log.Printf("[SIP] Write RTP to WebRTC error: %v", err)
+				}
+			}
+		}
+	}()
 }
 
-// WriteRTP writes RTP to SIP side
+// WriteRTP writes RTP to SIP side safely
 func (s *SIPBridge) WriteRTP(packet []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Prevent panic on closed rtpIn channel
+		}
+	}()
 	select {
 	case s.rtpIn <- packet:
 	default:
@@ -644,42 +670,50 @@ func generateCallID() string {
 	return fmt.Sprintf("%d@%s", time.Now().UnixNano(), generateTag())
 }
 
-// parseSDP parses remote media IP and Port from SDP body
+// parseSDP parses remote media IP and Port from SDP body, preferring media-level c= connection addresses
 func parseSDP(msg string) (string, int) {
-	var ip string
-	var port int
-
-	// Normalize line endings to avoid \r issues
 	msg = strings.ReplaceAll(msg, "\r\n", "\n")
 	lines := strings.Split(msg, "\n")
+
+	var sessionIP string
+	var mediaIP string
+	var port int
+	inAudioSection := false
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
-		// Parse connection information: c=<nettype> <addrtype> <connection-address>
 		if strings.HasPrefix(strings.ToLower(line), "c=") {
-			// Strip c= and spaces around it
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) == 2 {
 				fields := strings.Fields(strings.TrimSpace(parts[1]))
-				// Fields should be like ["IN", "IP4", "3.111.255.163"]
 				if len(fields) >= 3 {
-					ip = fields[2]
+					if inAudioSection {
+						mediaIP = fields[2]
+					} else {
+						sessionIP = fields[2]
+					}
 				}
 			}
 		}
 
-		// Parse media description: m=<media> <port> <proto> <fmt> ...
 		if strings.HasPrefix(strings.ToLower(line), "m=audio") {
+			inAudioSection = true
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) == 2 {
 				fields := strings.Fields(strings.TrimSpace(parts[1]))
-				// Fields should be like ["audio", "10242", "RTP/AVP", "0"]
 				if len(fields) >= 2 {
 					fmt.Sscanf(fields[1], "%d", &port)
 				}
 			}
+		} else if strings.HasPrefix(strings.ToLower(line), "m=") {
+			inAudioSection = false
 		}
+	}
+
+	ip := sessionIP
+	if mediaIP != "" {
+		ip = mediaIP
 	}
 	return ip, port
 }

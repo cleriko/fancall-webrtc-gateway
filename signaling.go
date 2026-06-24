@@ -381,9 +381,9 @@ func handleLeave(room *Room, msg *SignalingMessage) error {
 	return nil
 }
 
-// BridgeAudioToSIP bridges WebRTC audio track to SIP and vice-versa
+// BridgeAudioToSIP bridges WebRTC audio track to SIP
 func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
-	log.Printf("[Bridge] Starting audio bridge for room %s", room.ID)
+	log.Printf("[Bridge] Starting WebRTC->SIP audio bridge for room %s", room.ID)
 
 	// Get SIP bridge
 	sipBridge := room.GetSIPBridge()
@@ -412,7 +412,7 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 				remoteIP := sipBridge.remoteRtpIP
 				remotePort := sipBridge.remoteRtpPort
 				sipBridge.mu.RUnlock()
-				log.Printf("[Bridge] WebRTC -> SIP: Forwarded %d RTP packets to %s:%d. Original PT=%d, SSRC=%d, TS=%d", 
+				log.Printf("[Bridge] WebRTC -> SIP: Forwarded %d RTP packets to %s:%d. Original PT=%d, SSRC=%d, TS=%d",
 					packetCount, remoteIP, remotePort, rtpPacket.PayloadType, rtpPacket.SSRC, rtpPacket.Timestamp)
 			}
 
@@ -429,49 +429,6 @@ func bridgeAudioToSIP(room *Room, track *webrtc.TrackRemote) {
 		}
 		log.Printf("[Bridge] WebRTC->SIP bridge ended for room %s", room.ID)
 	}()
-
-	// Read RTP packets from SIP and forward to WebRTC
-	go func() {
-		localTrack := room.GetLocalTrack()
-		if localTrack == nil {
-			log.Printf("[Bridge] No local WebRTC track available for room %s", room.ID)
-			return
-		}
-
-		var packetCount int
-		for {
-			if room.GetStatus() == RoomStatusEnded || room.GetStatus() == RoomStatusFailed {
-				break
-			}
-
-			packet, ok := sipBridge.ReadRTP()
-			if !ok {
-				continue
-			}
-
-			// Ensure the packet size is at least the size of standard RTP header (12 bytes)
-			if len(packet) < 12 {
-				continue
-			}
-
-			packetCount++
-			if packetCount%100 == 0 {
-				log.Printf("[Bridge] SIP -> WebRTC: Forwarded %d RTP packets to WebRTC localTrack. Source length=%d", packetCount, len(packet))
-			}
-
-			// Normalize the Payload Type of the outgoing WebRTC packet to PCMU (0)
-			packet[1] = (packet[1] & 0x80) | 0
-
-			// Forward packet directly to WebRTC
-			_, err := localTrack.Write(packet)
-			if err != nil {
-				log.Printf("[Bridge] Write RTP to WebRTC error: %v", err)
-			}
-		}
-		log.Printf("[Bridge] SIP->WebRTC bridge ended for room %s", room.ID)
-	}()
-
-	log.Printf("[Bridge] Audio bridge started for room %s", room.ID)
 }
 
 // ExtractRoomIDFromPath extracts room ID from URL path
