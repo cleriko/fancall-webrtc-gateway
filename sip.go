@@ -182,6 +182,18 @@ func (s *SIPBridge) sipMessageLoop() {
 		}
 
 		msg := string(buf[:n])
+
+		// Diagnostic: Log first line of every incoming SIP packet
+		firstLine := ""
+		if idx := strings.Index(msg, "\r\n"); idx != -1 {
+			firstLine = msg[:idx]
+		} else if idx := strings.Index(msg, "\n"); idx != -1 {
+			firstLine = msg[:idx]
+		} else {
+			firstLine = msg
+		}
+		log.Printf("[SIP RAW] Received from %s: %s", remoteAddr, firstLine)
+
 		go s.handleSIPMessage(msg, remoteAddr)
 	}
 }
@@ -530,7 +542,6 @@ func (s *SIPBridge) sendResponse(status string, requestLines []string, addr *net
 }
 
 func (s *SIPBridge) buildResponse(status string, requestLines []string) string {
-	via := extractHeader(requestLines, "Via")
 	from := extractHeader(requestLines, "From")
 	to := extractHeader(requestLines, "To")
 	callID := extractHeader(requestLines, "Call-ID")
@@ -541,7 +552,15 @@ func (s *SIPBridge) buildResponse(status string, requestLines []string) string {
 	s.mu.RUnlock()
 
 	resp := fmt.Sprintf("SIP/2.0 %s\r\n", status)
-	resp += fmt.Sprintf("Via: %s\r\n", via)
+
+	// Mirror ALL Via headers in the exact same order for proper transactional routing
+	for _, line := range requestLines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(trimmed), "via:") {
+			resp += fmt.Sprintf("%s\r\n", trimmed)
+		}
+	}
+
 	resp += fmt.Sprintf("From: %s\r\n", from)
 
 	if toTag != "" && !strings.Contains(strings.ToLower(to), "tag=") {
