@@ -425,8 +425,8 @@ func (s *SIPBridge) rtpReceiveLoop() {
 		}
 
 		packetCount++
-		if packetCount%100 == 0 {
-			log.Printf("[SIP] RTP Receive Loop: Received %d packets from %s", packetCount, addr)
+		if packetCount <= 5 || packetCount%100 == 0 {
+			log.Printf("[RTP-IN] Received %d bytes from %s (packet count: %d)", n, addr.String(), packetCount)
 		}
 
 		packet := make([]byte, n)
