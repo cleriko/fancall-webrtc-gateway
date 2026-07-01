@@ -5,6 +5,7 @@ This guide covers setting up the Fancall WebRTC Gateway (`fancall-webrtc-gateway
 ## Prerequisites
 
 Ensure you have the following installed on your local machine:
+
 - **Go**: Version 1.22 or higher.
 - **Docker**: (Optional) if you prefer to run it containerized.
 - **Git**: For cloning the repository.
@@ -64,6 +65,7 @@ go run .
 ```
 
 You should see logs indicating the server has started successfully:
+
 ```
 2026/06/24 10:00:00 [Gateway] Starting on :8080
 2026/06/24 10:00:00 [Gateway] SIP User Agent started on :5060
@@ -71,11 +73,12 @@ You should see logs indicating the server has started successfully:
 
 ## 5. Network Configuration & Ports
 
-WebRTC requires UDP ports to transmit media (audio). When running locally, Pion WebRTC will dynamically allocate UDP ports. 
+WebRTC requires UDP ports to transmit media (audio). When running locally, Pion WebRTC will dynamically allocate UDP ports.
 
 If you are using Docker, you **must** run the container in host network mode or map a wide range of UDP ports, otherwise the audio will not bridge.
 
 ### Running via Docker (Local)
+
 ```bash
 docker build -t fancall-webrtc-gateway .
 
@@ -86,12 +89,30 @@ docker run --network host --env-file .env fancall-webrtc-gateway
 docker run -p 8080:8080 -p 5060:5060/udp -p 10000-10050:10000-10050/udp --env-file .env fancall-webrtc-gateway
 ```
 
+### Docker Swarm / Dokploy / Coolify (Production)
+
+If you are deploying this gateway via Docker Swarm or a PaaS (like Dokploy/Coolify), standard port mapping often uses an ingress routing mesh that drops or mangles WebRTC UDP packets.
+
+You **must** expose the UDP ports using `mode=host`. For example, if you are exposing port `50000` for WebRTC media, and `5062` for SIP, you need to update the service to bypass the ingress mesh:
+
+```bash
+docker service update \
+  --publish-add mode=host,target=50000,published=50000,protocol=udp \
+  --publish-add mode=host,target=5062,published=5062,protocol=udp \
+  --publish-add mode=host,target=5064,published=5064,protocol=udp \
+  <your_service_name>
+```
+
+> **Why?** WebRTC relies on strict UDP packet timing and unaltered IPs. The default Docker Swarm routing mesh acts as a proxy that rewrites headers and delays packets, which causes WebRTC audio to fail silently (no audio). `mode=host` ensures the container binds directly to the host machine's UDP ports.
+
 ## 6. Testing with the Backend (Ngrok)
 
 The Fancall Node.js backend needs to talk to this Go Gateway to create rooms.
 
 If both are running on your local machine:
+
 1. Ensure the Node.js backend `.env` has:
+
    ```env
    VOBIZ_GATEWAY_URL=http://localhost:8080
    VOBIZ_GATEWAY_API_KEY=fancall-webrtc-secret-2026
@@ -114,6 +135,6 @@ Restart both servers if you change `.env` variables.
 
 ## Important Note on Local Audio Testing
 
-If you are running the gateway locally and testing with an iOS device on the same local WiFi network, audio should connect using mDNS/local IP candidates. 
+If you are running the gateway locally and testing with an iOS device on the same local WiFi network, audio should connect using mDNS/local IP candidates.
 
 However, if testing across cellular networks or different WiFis, you will need a TURN server (like Coturn) configured in the `ICE_SERVERS` environment variable, otherwise the WebRTC connection will fail to establish an audio stream.
