@@ -319,6 +319,13 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 		return fmt.Errorf("failed to set local description: %w", err)
 	}
 
+	// Replace c=IN IP4 0.0.0.0 in answer.SDP with public IP for client signaling
+	publicIP := "187.127.139.107"
+	if room.SIPBridge != nil && room.SIPBridge.config.PublicIP != "" {
+		publicIP = room.SIPBridge.config.PublicIP
+	}
+	answer.SDP = strings.ReplaceAll(answer.SDP, "c=IN IP4 0.0.0.0", fmt.Sprintf("c=IN IP4 %s", publicIP))
+
 	// Send answer to client
 	room.SendSignalingMessage(SignalingMessage{
 		Type:   "answer",
