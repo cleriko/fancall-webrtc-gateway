@@ -209,11 +209,15 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 
 	room.SetStatus(RoomStatusConnecting)
 
-	// Create peer connection config
-	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
+	// Create peer connection config using room's ICE servers
+	iceServers := room.ICEServers
+	if len(iceServers) == 0 {
+		iceServers = []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
-		},
+		}
+	}
+	config := webrtc.Configuration{
+		ICEServers:   iceServers,
 		SDPSemantics: webrtc.SDPSemanticsUnifiedPlan,
 	}
 

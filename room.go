@@ -28,6 +28,7 @@ type Room struct {
 	SIPBridge      *SIPBridge                  `json:"-"`
 	LocalTrack     *webrtc.TrackLocalStaticRTP `json:"-"`
 	RemoteTrack    *webrtc.TrackRemote         `json:"-"`
+	ICEServers     []webrtc.ICEServer          `json:"-"`
 	webrtcAPI      *webrtc.API                 `json:"-"`
 	mu             sync.RWMutex
 }
@@ -75,6 +76,9 @@ type RoomManager struct {
 // NewRoomManager creates a new room manager
 func NewRoomManager(cfg *Config) *RoomManager {
 	settingEngine := webrtc.SettingEngine{}
+
+	// Accept peer reflexive (prflx) candidates immediately for NAT port-shift traversal
+	settingEngine.SetPrflxAcceptanceMinWait(0)
 
 	// Create global ICE UDP Mux on port 50000
 	mux, err := ice.NewMultiUDPMuxFromPort(50000)
@@ -136,6 +140,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 		SignalingChan: make(chan SignalingMessage, 100),
+		ICEServers:    rm.cfg.ICEServers,
 		webrtcAPI:     rm.webrtcAPI,
 	}
 
