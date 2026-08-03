@@ -84,12 +84,12 @@ func NewRoomManager(cfg *Config) *RoomManager {
 	// Accept peer reflexive (prflx) candidates immediately for NAT port-shift traversal
 	settingEngine.SetPrflxAcceptanceMinWait(0)
 
-	// Create global ICE UDP Mux on 0.0.0.0:50000 to listen on ALL interface addresses
-	udpAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:50000")
+	// Create global ICE UDP Mux on 0.0.0.0:50000 to listen on ALL IPv4 interface addresses
+	udpAddr, err := net.ResolveUDPAddr("udp4", "0.0.0.0:50000")
 	if err != nil {
-		log.Printf("[RoomManager] Failed to resolve UDP 0.0.0.0:50000: %v", err)
+		log.Printf("[RoomManager] Failed to resolve UDP4 0.0.0.0:50000: %v", err)
 	} else {
-		udpConn, err := net.ListenUDP("udp", udpAddr)
+		udpConn, err := net.ListenUDP("udp4", udpAddr)
 		if err != nil {
 			log.Printf("[RoomManager] Failed to bind ICE UDP Mux on port 50000: %v", err)
 		} else {
@@ -97,22 +97,22 @@ func NewRoomManager(cfg *Config) *RoomManager {
 				UDPConn: udpConn,
 			})
 			settingEngine.SetICEUDPMux(mux)
-			log.Printf("[RoomManager] Shared WebRTC ICE UDP Mux bound on 0.0.0.0:50000")
+			log.Printf("[RoomManager] Shared WebRTC ICE UDP Mux bound on 0.0.0.0:50000 (udp4)")
 		}
 	}
 
-	// Bind shared SIP UDP listener on 0.0.0.0:5062
+	// Bind shared SIP UDP listener on 0.0.0.0:5062 (udp4)
 	var sharedSIPConn *net.UDPConn
-	sipAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:5062")
+	sipAddr, err := net.ResolveUDPAddr("udp4", "0.0.0.0:5062")
 	if err != nil {
-		log.Printf("[RoomManager] Failed to resolve UDP 0.0.0.0:5062 for SIP: %v", err)
+		log.Printf("[RoomManager] Failed to resolve UDP4 0.0.0.0:5062 for SIP: %v", err)
 	} else {
-		conn, err := net.ListenUDP("udp", sipAddr)
+		conn, err := net.ListenUDP("udp4", sipAddr)
 		if err != nil {
 			log.Printf("[RoomManager] Failed to bind shared SIP UDP listener on port 5062: %v", err)
 		} else {
 			sharedSIPConn = conn
-			log.Printf("[RoomManager] Shared SIP UDP listener bound on 0.0.0.0:5062")
+			log.Printf("[RoomManager] Shared SIP UDP listener bound on 0.0.0.0:5062 (udp4)")
 		}
 	}
 

@@ -77,13 +77,13 @@ func NewSIPBridge(config SIPConfig, room *Room, sharedConn *net.UDPConn) (*SIPBr
 	} else {
 		// Fallback: bind own socket on port 5062 or dynamic port
 		sipPort := 5062
-		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, sipPort))
+		addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", config.LocalIP, sipPort))
 		if err == nil {
-			conn, err = net.ListenUDP("udp", addr)
+			conn, err = net.ListenUDP("udp4", addr)
 		}
 		if conn == nil || err != nil {
-			addrDynamic, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
-			conn, err = net.ListenUDP("udp", addrDynamic)
+			addrDynamic, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:0", config.LocalIP))
+			conn, err = net.ListenUDP("udp4", addrDynamic)
 			if err != nil {
 				return nil, fmt.Errorf("failed to listen dynamic SIP UDP: %w", err)
 			}
@@ -94,14 +94,14 @@ func NewSIPBridge(config SIPConfig, room *Room, sharedConn *net.UDPConn) (*SIPBr
 	// Try binding RTP socket on 5064 or dynamic port
 	rtpPort := 5064
 	var rtpConn *net.UDPConn
-	rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
+	rtpAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
 	if err == nil {
-		rtpConn, err = net.ListenUDP("udp", rtpAddr)
+		rtpConn, err = net.ListenUDP("udp4", rtpAddr)
 	}
 
 	if rtpConn == nil || err != nil {
-		rtpAddrDynamic, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
-		rtpConn, err = net.ListenUDP("udp", rtpAddrDynamic)
+		rtpAddrDynamic, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:0", config.LocalIP))
+		rtpConn, err = net.ListenUDP("udp4", rtpAddrDynamic)
 		if err != nil {
 			if !isSharedConn && conn != nil {
 				conn.Close()
