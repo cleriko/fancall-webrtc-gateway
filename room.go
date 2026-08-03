@@ -78,6 +78,9 @@ type RoomManager struct {
 func NewRoomManager(cfg *Config) *RoomManager {
 	settingEngine := webrtc.SettingEngine{}
 
+	// Restrict WebRTC network types strictly to IPv4 UDP
+	settingEngine.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+
 	// Accept peer reflexive (prflx) candidates immediately for NAT port-shift traversal
 	settingEngine.SetPrflxAcceptanceMinWait(0)
 

@@ -139,14 +139,6 @@ func (s *SIPBridge) Start() error {
 	// Start media bridge
 	go s.mediaBridgeLoop()
 
-	// Send REGISTER
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		if err := s.register(); err != nil {
-			log.Printf("[SIP] Initial registration failed: %v", err)
-		}
-	}()
-
 	log.Printf("[SIP] Bridge started on %s:%d (RTP: %d, SharedSIP=%v)", s.config.LocalIP, s.config.LocalPort, s.rtpPort, s.isSharedConn)
 	return nil
 }

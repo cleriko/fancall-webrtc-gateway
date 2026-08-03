@@ -290,6 +290,14 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 		}
 	})
 
+	pc.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
+		log.Printf("[WebRTC] ICE gathering state changed: %s", state.String())
+	})
+
+	pc.OnSignalingStateChange(func(state webrtc.SignalingState) {
+		log.Printf("[WebRTC] Signaling state changed: %s", state.String())
+	})
+
 	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		if candidate == nil {
 			return
@@ -371,10 +379,15 @@ func handleICECandidate(room *Room, msg *SignalingMessage) error {
 		return fmt.Errorf("no peer connection exists")
 	}
 
+	log.Printf("[WebRTC] Received client ICE candidate: %s (mid=%v, index=%v)",
+		msg.Candidate.Candidate, msg.Candidate.SDPMid, msg.Candidate.SDPMLineIndex)
+
 	if err := pc.AddICECandidate(*msg.Candidate); err != nil {
+		log.Printf("[WebRTC] Failed to add ICE candidate: %v", err)
 		return fmt.Errorf("failed to add ICE candidate: %w", err)
 	}
 
+	log.Printf("[WebRTC] Successfully added ICE candidate")
 	return nil
 }
 
