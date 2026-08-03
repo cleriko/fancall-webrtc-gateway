@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -19,13 +21,14 @@ type SIPBridge struct {
 	config SIPConfig
 	room   *Room
 
-	mu         sync.RWMutex
-	callID     string
-	fromTag    string
-	toTag      string
-	cseq       int
-	connected  bool
-	registered bool
+	mu           sync.RWMutex
+	callID       string
+	fromTag      string
+	toTag        string
+	cseq         int
+	connected    bool
+	registered   bool
+	isSharedConn bool
 
 	// UDP socket for SIP
 	conn       *net.UDPConn
@@ -63,68 +66,61 @@ func (s *SIPBridge) sipIP() string {
 }
 
 // NewSIPBridge creates a new SIP bridge
-func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
-	// First, try binding to the preferred fixed SIP port 5062 and RTP port 5064
-	sipPort := 5062
-	rtpPort := 5064
+func NewSIPBridge(config SIPConfig, room *Room, sharedConn *net.UDPConn) (*SIPBridge, error) {
+	var conn *net.UDPConn
+	isSharedConn := false
 
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, sipPort))
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve SIP addr: %w", err)
-	}
-
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		// Port 5062 is in use, fallback to dynamic port allocation
-		log.Printf("[SIP] Fixed port 5062 in use or unavailable: %v. Falling back to dynamic port.", err)
-		addrDynamic, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
-		conn, err = net.ListenUDP("udp", addrDynamic)
-		if err != nil {
-			return nil, fmt.Errorf("failed to listen dynamic SIP UDP: %w", err)
-		}
-	}
-
-	assignedSipPort := conn.LocalAddr().(*net.UDPAddr).Port
-	config.LocalPort = assignedSipPort
-
-	// Try binding RTP to 5064
-	var rtpConn *net.UDPConn
-	var assignedRtpPort int
-
-	if assignedSipPort == 5062 {
-		rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
+	if sharedConn != nil {
+		conn = sharedConn
+		isSharedConn = true
+		config.LocalPort = 5062
+	} else {
+		// Fallback: bind own socket on port 5062 or dynamic port
+		sipPort := 5062
+		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, sipPort))
 		if err == nil {
-			rtpConn, err = net.ListenUDP("udp", rtpAddr)
+			conn, err = net.ListenUDP("udp", addr)
 		}
+		if conn == nil || err != nil {
+			addrDynamic, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
+			conn, err = net.ListenUDP("udp", addrDynamic)
+			if err != nil {
+				return nil, fmt.Errorf("failed to listen dynamic SIP UDP: %w", err)
+			}
+		}
+		config.LocalPort = conn.LocalAddr().(*net.UDPAddr).Port
+	}
+
+	// Try binding RTP socket on 5064 or dynamic port
+	rtpPort := 5064
+	var rtpConn *net.UDPConn
+	rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
+	if err == nil {
+		rtpConn, err = net.ListenUDP("udp", rtpAddr)
 	}
 
 	if rtpConn == nil || err != nil {
-		// Fallback to dynamic port allocation for RTP too
-		if assignedSipPort == 5062 {
-			log.Printf("[SIP] Fixed RTP port 5064 in use, falling back to dynamic port allocation")
-		}
-		rtpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
+		rtpAddrDynamic, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:0", config.LocalIP))
+		rtpConn, err = net.ListenUDP("udp", rtpAddrDynamic)
 		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("failed to resolve RTP addr: %w", err)
-		}
-		rtpConn, err = net.ListenUDP("udp", rtpAddr)
-		if err != nil {
-			conn.Close()
+			if !isSharedConn && conn != nil {
+				conn.Close()
+			}
 			return nil, fmt.Errorf("failed to listen RTP UDP: %w", err)
 		}
 	}
 
-	assignedRtpPort = rtpConn.LocalAddr().(*net.UDPAddr).Port
+	assignedRtpPort := rtpConn.LocalAddr().(*net.UDPAddr).Port
 
 	bridge := &SIPBridge{
-		config:  config,
-		room:    room,
-		conn:    conn,
-		rtpConn: rtpConn,
-		rtpPort: assignedRtpPort,
-		rtpIn:   make(chan []byte, 200),
-		rtpOut:  make(chan []byte, 200),
+		config:       config,
+		room:         room,
+		conn:         conn,
+		isSharedConn: isSharedConn,
+		rtpConn:      rtpConn,
+		rtpPort:      assignedRtpPort,
+		rtpIn:        make(chan []byte, 200),
+		rtpOut:       make(chan []byte, 200),
 	}
 
 	return bridge, nil
@@ -132,8 +128,10 @@ func NewSIPBridge(config SIPConfig, room *Room) (*SIPBridge, error) {
 
 // Start starts the SIP server and sends REGISTER
 func (s *SIPBridge) Start() error {
-	// Start SIP message handler
-	go s.sipMessageLoop()
+	// Only start individual sipMessageLoop if not using shared socket
+	if !s.isSharedConn {
+		go s.sipMessageLoop()
+	}
 
 	// Start RTP receiver
 	go s.rtpReceiveLoop()
@@ -149,14 +147,14 @@ func (s *SIPBridge) Start() error {
 		}
 	}()
 
-	log.Printf("[SIP] Bridge started on %s:%d (RTP: %d)", s.config.LocalIP, s.config.LocalPort, s.rtpPort)
+	log.Printf("[SIP] Bridge started on %s:%d (RTP: %d, SharedSIP=%v)", s.config.LocalIP, s.config.LocalPort, s.rtpPort, s.isSharedConn)
 	return nil
 }
 
 // Stop stops the SIP bridge
 func (s *SIPBridge) Stop() {
 	s.Hangup()
-	if s.conn != nil {
+	if !s.isSharedConn && s.conn != nil {
 		s.conn.Close()
 	}
 	if s.rtpConn != nil {
@@ -165,6 +163,11 @@ func (s *SIPBridge) Stop() {
 	close(s.rtpIn)
 	close(s.rtpOut)
 	log.Printf("[SIP] Bridge stopped")
+}
+
+// HandleIncomingSIP is called by RoomManager for shared socket messages
+func (s *SIPBridge) HandleIncomingSIP(msg string, remoteAddr *net.UDPAddr) {
+	s.handleSIPMessage(msg, remoteAddr)
 }
 
 // sipMessageLoop handles incoming SIP messages
@@ -213,6 +216,8 @@ func (s *SIPBridge) handleSIPMessage(msg string, remoteAddr *net.UDPAddr) {
 		s.handleAck(msg, lines, remoteAddr)
 	} else if strings.HasPrefix(firstLine, "BYE") {
 		s.handleBye(msg, lines, remoteAddr)
+	} else if strings.Contains(firstLine, "401 Unauthorized") || strings.Contains(firstLine, "407 Proxy Authentication Required") {
+		s.handleUnauthorized(msg, lines)
 	} else if strings.Contains(firstLine, "200 OK") && s.isPendingRegister() {
 		s.handleRegisterResponse(msg, lines)
 	} else if strings.Contains(firstLine, "200 OK") {
@@ -295,10 +300,120 @@ func (s *SIPBridge) handleBye(msg string, lines []string, remoteAddr *net.UDPAdd
 
 // handleRegisterResponse processes 200 OK for REGISTER
 func (s *SIPBridge) handleRegisterResponse(msg string, lines []string) {
-	log.Printf("[SIP] REGISTER 200 OK received")
+	log.Printf("[SIP] REGISTER 200 OK received - SIP endpoint registered successfully")
 	s.mu.Lock()
 	s.registered = true
 	s.mu.Unlock()
+}
+
+// handleUnauthorized processes 401/407 challenges and re-sends REGISTER with Digest Authorization
+func (s *SIPBridge) handleUnauthorized(msg string, lines []string) {
+	log.Printf("[SIP] 401/407 Challenge received from Vobiz. Computing Digest Auth...")
+
+	authHeader := extractHeader(lines, "WWW-Authenticate")
+	if authHeader == "" {
+		authHeader = extractHeader(lines, "Proxy-Authenticate")
+	}
+
+	if authHeader == "" {
+		log.Printf("[SIP] Error: 401 response missing WWW-Authenticate header")
+		return
+	}
+
+	realm := extractAuthParam(authHeader, "realm")
+	nonce := extractAuthParam(authHeader, "nonce")
+	qop := extractAuthParam(authHeader, "qop")
+	opaque := extractAuthParam(authHeader, "opaque")
+
+	log.Printf("[SIP] Digest Auth params: realm=%s, nonce=%s, qop=%s", realm, nonce, qop)
+
+	registerURI := fmt.Sprintf("sip:%s", s.config.Domain)
+	fromURI := fmt.Sprintf("sip:%s@%s", s.config.Username, s.config.Domain)
+	sipIP := s.sipIP()
+	contactURI := fmt.Sprintf("sip:%s@%s:%d", s.config.Username, sipIP, s.config.LocalPort)
+
+	cnonce := generateRandomString(16)
+	nc := "00000001"
+
+	response := calculateDigestResponse(s.config.Username, s.config.Password, realm, nonce, registerURI, "REGISTER", qop, cnonce, nc)
+
+	regMsg := fmt.Sprintf("REGISTER %s SIP/2.0\r\n", registerURI)
+	regMsg += fmt.Sprintf("Via: SIP/2.0/UDP %s:%d;branch=z9hG4bK%s\r\n", sipIP, s.config.LocalPort, generateBranch())
+	regMsg += fmt.Sprintf("From: \"%s\" <%s>;tag=%s\r\n", s.config.DisplayName, fromURI, generateTag())
+	regMsg += fmt.Sprintf("To: \"%s\" <%s>\r\n", s.config.DisplayName, fromURI)
+	regMsg += fmt.Sprintf("Call-ID: %s\r\n", generateCallID())
+	regMsg += fmt.Sprintf("CSeq: 2 REGISTER\r\n")
+	regMsg += fmt.Sprintf("Contact: <%s>\r\n", contactURI)
+	regMsg += fmt.Sprintf("Max-Forwards: 70\r\n")
+	regMsg += fmt.Sprintf("Expires: 3600\r\n")
+
+	digestHeader := fmt.Sprintf(`Authorization: Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s", algorithm=MD5`,
+		s.config.Username, realm, nonce, registerURI, response)
+	if qop != "" {
+		digestHeader += fmt.Sprintf(`, qop=%s, nc=%s, cnonce="%s"`, qop, nc, cnonce)
+	}
+	if opaque != "" {
+		digestHeader += fmt.Sprintf(`, opaque="%s"`, opaque)
+	}
+
+	regMsg += digestHeader + "\r\n"
+	regMsg += fmt.Sprintf("Content-Length: 0\r\n")
+	regMsg += "\r\n"
+
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:5060", s.config.Domain))
+	if err != nil {
+		log.Printf("[SIP] Failed to resolve SIP domain: %v", err)
+		return
+	}
+
+	_, err = s.conn.WriteToUDP([]byte(regMsg), addr)
+	if err != nil {
+		log.Printf("[SIP] Failed to send authenticated REGISTER: %v", err)
+		return
+	}
+
+	log.Printf("[SIP] Authenticated REGISTER sent to %s with Digest response", addr)
+}
+
+func extractAuthParam(header, param string) string {
+	pattern := param + `="`
+	idx := strings.Index(header, pattern)
+	if idx != -1 {
+		start := idx + len(pattern)
+		end := strings.Index(header[start:], `"`)
+		if end != -1 {
+			return header[start : start+end]
+		}
+	}
+	patternUnquoted := param + `=`
+	idx = strings.Index(header, patternUnquoted)
+	if idx != -1 {
+		start := idx + len(patternUnquoted)
+		rest := header[start:]
+		end := strings.IndexAny(rest, ", \r\n")
+		if end != -1 {
+			return rest[:end]
+		}
+		return rest
+	}
+	return ""
+}
+
+func calculateDigestResponse(username, password, realm, nonce, uri, method, qop, cnonce, nc string) string {
+	ha1Buf := md5.Sum([]byte(fmt.Sprintf("%s:%s:%s", username, realm, password)))
+	ha1 := hex.EncodeToString(ha1Buf[:])
+
+	ha2Buf := md5.Sum([]byte(fmt.Sprintf("%s:%s", method, uri)))
+	ha2 := hex.EncodeToString(ha2Buf[:])
+
+	var respBuf [16]byte
+	if qop != "" {
+		respBuf = md5.Sum([]byte(fmt.Sprintf("%s:%s:%s:%s:%s:%s", ha1, nonce, nc, cnonce, qop, ha2)))
+	} else {
+		respBuf = md5.Sum([]byte(fmt.Sprintf("%s:%s:%s", ha1, nonce, ha2)))
+	}
+
+	return hex.EncodeToString(respBuf[:])
 }
 
 // handleOK processes generic 200 OK

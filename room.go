@@ -67,10 +67,11 @@ type CreateRoomResponse struct {
 
 // RoomManager manages all active rooms
 type RoomManager struct {
-	cfg       *Config
-	rooms     map[string]*Room // room_id -> Room
-	mu        sync.RWMutex
-	webrtcAPI *webrtc.API // Share WebRTC SettingEngine with UDPMux
+	cfg           *Config
+	rooms         map[string]*Room // room_id -> Room
+	mu            sync.RWMutex
+	webrtcAPI     *webrtc.API // Share WebRTC SettingEngine with UDPMux
+	sharedSIPConn *net.UDPConn
 }
 
 // NewRoomManager creates a new room manager
@@ -94,6 +95,21 @@ func NewRoomManager(cfg *Config) *RoomManager {
 			})
 			settingEngine.SetICEUDPMux(mux)
 			log.Printf("[RoomManager] Shared WebRTC ICE UDP Mux bound on 0.0.0.0:50000")
+		}
+	}
+
+	// Bind shared SIP UDP listener on 0.0.0.0:5062
+	var sharedSIPConn *net.UDPConn
+	sipAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:5062")
+	if err != nil {
+		log.Printf("[RoomManager] Failed to resolve UDP 0.0.0.0:5062 for SIP: %v", err)
+	} else {
+		conn, err := net.ListenUDP("udp", sipAddr)
+		if err != nil {
+			log.Printf("[RoomManager] Failed to bind shared SIP UDP listener on port 5062: %v", err)
+		} else {
+			sharedSIPConn = conn
+			log.Printf("[RoomManager] Shared SIP UDP listener bound on 0.0.0.0:5062")
 		}
 	}
 
@@ -127,11 +143,18 @@ func NewRoomManager(cfg *Config) *RoomManager {
 
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine), webrtc.WithMediaEngine(mediaEngine))
 
-	return &RoomManager{
-		cfg:       cfg,
-		rooms:     make(map[string]*Room),
-		webrtcAPI: api,
+	rm := &RoomManager{
+		cfg:           cfg,
+		rooms:         make(map[string]*Room),
+		webrtcAPI:     api,
+		sharedSIPConn: sharedSIPConn,
 	}
+
+	if sharedSIPConn != nil {
+		go rm.sharedSIPDispatchLoop()
+	}
+
+	return rm
 }
 
 // CreateRoom creates a new room for a fan-celebrity call
@@ -168,7 +191,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 	// The SIP bridge will listen for incoming calls from Vobiz
 	sipConfig := SIPConfig{
 		LocalIP:     "0.0.0.0",
-		LocalPort:   0, // Let system assign port
+		LocalPort:   5062, // Fixed port 5062 exposed via Docker Swarm
 		PublicIP:    publicIP,
 		Username:    fmt.Sprintf("fan_%s", req.FanID),
 		Password:    generateRandomString(16),
@@ -177,7 +200,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 	}
 
 	sipURI := ""
-	sipBridge, err := NewSIPBridge(sipConfig, room)
+	sipBridge, err := NewSIPBridge(sipConfig, room, rm.sharedSIPConn)
 	if err != nil {
 		log.Printf("[RoomManager] Failed to create SIP bridge: %v", err)
 		// Non-fatal — room can still work for testing
@@ -186,8 +209,8 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		if err := sipBridge.Start(); err != nil {
 			log.Printf("[RoomManager] Failed to start SIP bridge: %v", err)
 		} else {
-			// Construct the SIP URI using the assigned UDP port and resolved public IP/SIP IP
-			sipURI = fmt.Sprintf("sip:%s@%s:%d", roomID, sipBridge.sipIP(), sipBridge.config.LocalPort)
+			// Construct the SIP URI using fixed port 5062 and resolved public IP
+			sipURI = fmt.Sprintf("sip:%s@%s:5062", roomID, sipBridge.sipIP())
 			log.Printf("[RoomManager] Created SIP URI for Vobiz answer routing: %s", sipURI)
 		}
 	}
@@ -414,4 +437,74 @@ func generateRandomString(length int) string {
 		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
 	}
 	return string(b)
+}
+
+// sharedSIPDispatchLoop reads UDP packets on port 5062 and dispatches them to active rooms
+func (rm *RoomManager) sharedSIPDispatchLoop() {
+	buf := make([]byte, 65535)
+	for {
+		n, remoteAddr, err := rm.sharedSIPConn.ReadFromUDP(buf)
+		if err != nil {
+			log.Printf("[RoomManager] Shared SIP UDP read error: %v", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		msg := string(buf[:n])
+
+		firstLine := ""
+		if idx := strings.Index(msg, "\r\n"); idx != -1 {
+			firstLine = msg[:idx]
+		} else if idx := strings.Index(msg, "\n"); idx != -1 {
+			firstLine = msg[:idx]
+		} else {
+			firstLine = msg
+		}
+		log.Printf("[SIP RAW] Received from %s: %s", remoteAddr, firstLine)
+
+		rm.dispatchSIPMessage(msg, remoteAddr)
+	}
+}
+
+// dispatchSIPMessage routes incoming SIP messages to the target room
+func (rm *RoomManager) dispatchSIPMessage(msg string, remoteAddr *net.UDPAddr) {
+	lines := strings.Split(msg, "\r\n")
+	if len(lines) == 0 {
+		return
+	}
+
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	// 1. Try matching room by room_id in Request-URI or To/From lines
+	for roomID, room := range rm.rooms {
+		if strings.Contains(lines[0], roomID) || strings.Contains(msg, roomID) {
+			if room.SIPBridge != nil {
+				go room.SIPBridge.HandleIncomingSIP(msg, remoteAddr)
+				return
+			}
+		}
+	}
+
+	// 2. Try matching room by fan_id or SIP username in msg
+	for _, room := range rm.rooms {
+		if room.SIPBridge != nil {
+			if room.FanID != "" && strings.Contains(msg, room.FanID) {
+				go room.SIPBridge.HandleIncomingSIP(msg, remoteAddr)
+				return
+			}
+		}
+	}
+
+	// 3. Fallback: if only 1 active room, dispatch to it
+	if len(rm.rooms) == 1 {
+		for _, room := range rm.rooms {
+			if room.SIPBridge != nil {
+				go room.SIPBridge.HandleIncomingSIP(msg, remoteAddr)
+				return
+			}
+		}
+	}
+
+	log.Printf("[RoomManager] Unhandled SIP message from %s (no matching room): %s", remoteAddr, lines[0])
 }
