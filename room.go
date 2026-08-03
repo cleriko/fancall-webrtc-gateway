@@ -80,13 +80,21 @@ func NewRoomManager(cfg *Config) *RoomManager {
 	// Accept peer reflexive (prflx) candidates immediately for NAT port-shift traversal
 	settingEngine.SetPrflxAcceptanceMinWait(0)
 
-	// Create global ICE UDP Mux on port 50000
-	mux, err := ice.NewMultiUDPMuxFromPort(50000)
+	// Create global ICE UDP Mux on 0.0.0.0:50000 to listen on ALL interface addresses
+	udpAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:50000")
 	if err != nil {
-		log.Printf("[RoomManager] Warning: Failed to create ICE UDP Mux on port 50000: %v. Ephemeral ports will be used.", err)
+		log.Printf("[RoomManager] Failed to resolve UDP 0.0.0.0:50000: %v", err)
 	} else {
-		log.Printf("[RoomManager] Shared WebRTC ICE UDP Mux started on port 50000")
-		settingEngine.SetICEUDPMux(mux)
+		udpConn, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			log.Printf("[RoomManager] Failed to bind ICE UDP Mux on port 50000: %v", err)
+		} else {
+			mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{
+				UDPConn: udpConn,
+			})
+			settingEngine.SetICEUDPMux(mux)
+			log.Printf("[RoomManager] Shared WebRTC ICE UDP Mux bound on 0.0.0.0:50000")
+		}
 	}
 
 	// Resolve PublicURL to get the public IP address for NAT 1:1 mapping
