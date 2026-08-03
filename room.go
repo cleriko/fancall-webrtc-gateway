@@ -97,10 +97,9 @@ func NewRoomManager(cfg *Config) *RoomManager {
 		}
 	}
 
-	if publicIP != "187.127.139.107" {
-		settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
-		log.Printf("[RoomManager] Configured WebRTC SettingEngine with NAT 1:1 Host IP: %s", publicIP)
-	}
+	// Always set NAT 1:1 host IP so candidates advertise public VPS IP
+	settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
+	log.Printf("[RoomManager] Configured WebRTC SettingEngine with NAT 1:1 Host IP: %s", publicIP)
 
 	mediaEngine := &webrtc.MediaEngine{}
 	if err = mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
