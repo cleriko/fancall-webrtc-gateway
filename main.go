@@ -123,7 +123,7 @@ func loadConfig() *Config {
 	cfg := &Config{
 		HTTPPort:      getEnv("HTTP_PORT", "8080"),
 		WebSocketPath: getEnv("WS_PATH", "/ws"),
-		SIPDomain:     getEnv("SIP_DOMAIN", "registrar.vobiz.ai"),
+		SIPDomain:     getEnv("SIP_DOMAIN", getEnv("VOBIZ_SIP_DOMAIN", "registrar.vobiz.ai")),
 		APIKey:        getEnv("API_KEY", ""),
 		PublicURL:     getEnv("PUBLIC_URL", ""),
 		ICEServers: []webrtc.ICEServer{
