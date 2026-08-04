@@ -72,6 +72,7 @@ type RoomManager struct {
 	mu            sync.RWMutex
 	webrtcAPI     *webrtc.API // Share WebRTC SettingEngine with UDPMux
 	sharedSIPConn *net.UDPConn
+	sharedRTPConn *net.UDPConn
 }
 
 // NewRoomManager creates a new room manager
@@ -116,6 +117,21 @@ func NewRoomManager(cfg *Config) *RoomManager {
 		}
 	}
 
+	// Bind shared RTP UDP listener on 0.0.0.0:5064 (udp4)
+	var sharedRTPConn *net.UDPConn
+	rtpAddr, err := net.ResolveUDPAddr("udp4", "0.0.0.0:5064")
+	if err != nil {
+		log.Printf("[RoomManager] Failed to resolve UDP4 0.0.0.0:5064 for RTP: %v", err)
+	} else {
+		conn, err := net.ListenUDP("udp4", rtpAddr)
+		if err != nil {
+			log.Printf("[RoomManager] Failed to bind shared RTP UDP listener on port 5064: %v", err)
+		} else {
+			sharedRTPConn = conn
+			log.Printf("[RoomManager] Shared RTP UDP listener bound on 0.0.0.0:5064 (udp4)")
+		}
+	}
+
 	// Resolve PublicURL to get the public IP address for NAT 1:1 mapping
 	publicIP := "187.127.139.107"
 	if cfg.PublicURL != "" {
@@ -151,10 +167,14 @@ func NewRoomManager(cfg *Config) *RoomManager {
 		rooms:         make(map[string]*Room),
 		webrtcAPI:     api,
 		sharedSIPConn: sharedSIPConn,
+		sharedRTPConn: sharedRTPConn,
 	}
 
 	if sharedSIPConn != nil {
 		go rm.sharedSIPDispatchLoop()
+	}
+	if sharedRTPConn != nil {
+		go rm.sharedRTPDispatchLoop()
 	}
 
 	return rm
@@ -510,4 +530,62 @@ func (rm *RoomManager) dispatchSIPMessage(msg string, remoteAddr *net.UDPAddr) {
 	}
 
 	log.Printf("[RoomManager] Unhandled SIP message from %s (no matching room): %s", remoteAddr, lines[0])
+}
+
+func (rm *RoomManager) sharedRTPDispatchLoop() {
+	buf := make([]byte, 65535)
+	for {
+		n, remoteAddr, err := rm.sharedRTPConn.ReadFromUDP(buf)
+		if err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				return
+			}
+			log.Printf("[RTPDispatch] Read error: %v", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		packet := make([]byte, n)
+		copy(packet, buf[:n])
+
+		bridge := rm.findBridgeForRTPRemote(remoteAddr)
+		if bridge != nil {
+			select {
+			case bridge.rtpOut <- packet:
+			default:
+			}
+		}
+	}
+}
+
+func (rm *RoomManager) findBridgeForRTPRemote(remoteAddr *net.UDPAddr) *SIPBridge {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	remoteIP := remoteAddr.IP.String()
+	remotePort := remoteAddr.Port
+
+	for _, room := range rm.rooms {
+		bridge := room.GetSIPBridge()
+		if bridge != nil {
+			bridge.mu.RLock()
+			bIP := bridge.remoteRtpIP
+			bPort := bridge.remoteRtpPort
+			bridge.mu.RUnlock()
+
+			if bIP != "" && (bIP == remoteIP || strings.HasSuffix(remoteIP, bIP)) {
+				if bPort == 0 || bPort == remotePort {
+					return bridge
+				}
+			}
+		}
+	}
+	// Fallback to any active connected bridge
+	for _, room := range rm.rooms {
+		bridge := room.GetSIPBridge()
+		if bridge != nil && bridge.isConnected() {
+			return bridge
+		}
+	}
+	return nil
 }
