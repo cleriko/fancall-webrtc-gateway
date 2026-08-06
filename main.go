@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ type Config struct {
 	VobizBaseURL    string        `env:"VOBIZ_BASE_URL"`
 	VobizFromNumber string        `env:"VOBIZ_FROM_NUMBER"`
 	PublicURL       string        `env:"PUBLIC_URL"`
+	PublicIP        string        `env:"PUBLIC_IP"`
 	SIPDomain       string        `env:"SIP_DOMAIN" envDefault:"registrar.vobiz.ai"`
 	MaxCallDuration time.Duration `env:"MAX_CALL_DURATION" envDefault:"1h"`
 	APIKey          string        `env:"API_KEY"`
@@ -29,8 +32,9 @@ type Config struct {
 }
 
 func main() {
+	loadEnvFile(".env")
 	cfg := loadConfig()
-	log.Printf("[Config] Loaded PublicURL: %q", cfg.PublicURL)
+	log.Printf("[Config] Loaded PublicURL: %q, PublicIP: %q", cfg.PublicURL, cfg.PublicIP)
 
 	// Initialize room manager
 	roomManager := NewRoomManager(cfg)
@@ -126,6 +130,7 @@ func loadConfig() *Config {
 		SIPDomain:     getEnv("SIP_DOMAIN", getEnv("VOBIZ_SIP_DOMAIN", "registrar.vobiz.ai")),
 		APIKey:        getEnv("API_KEY", ""),
 		PublicURL:     getEnv("PUBLIC_URL", ""),
+		PublicIP:      getEnv("PUBLIC_IP", ""),
 		ICEServers: []webrtc.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
@@ -146,6 +151,31 @@ func loadConfig() *Config {
 	}
 
 	return cfg
+}
+
+func loadEnvFile(filename string) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			val = strings.Trim(val, `"'`)
+			if os.Getenv(key) == "" && val != "" {
+				os.Setenv(key, val)
+			}
+		}
+	}
 }
 
 func getEnv(key, defaultVal string) string {

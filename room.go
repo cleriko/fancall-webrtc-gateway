@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -132,19 +133,10 @@ func NewRoomManager(cfg *Config) *RoomManager {
 		}
 	}
 
-	// Resolve PublicURL to get the public IP address for NAT 1:1 mapping
-	publicIP := "187.127.139.107"
-	if cfg.PublicURL != "" {
-		ips, err := net.LookupIP(cfg.PublicURL)
-		if err == nil && len(ips) > 0 {
-			publicIP = ips[0].String()
-			log.Printf("[RoomManager] Resolved PublicURL %s to IP for WebRTC: %s", cfg.PublicURL, publicIP)
-		} else {
-			log.Printf("[RoomManager] Warning: Failed to resolve PublicURL %s to IP for WebRTC, falling back to 0.0.0.0", cfg.PublicURL)
-		}
-	}
+	// Resolve public IP address for NAT 1:1 mapping
+	publicIP := resolvePublicIP(cfg.PublicURL, cfg.PublicIP)
 
-	// Always set NAT 1:1 host IP so candidates advertise public VPS IP
+	// Set NAT 1:1 host IP so candidates advertise the correct public or local IP
 	settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
 	log.Printf("[RoomManager] Configured WebRTC SettingEngine with NAT 1:1 Host IP: %s", publicIP)
 
@@ -198,17 +190,8 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		webrtcAPI:     rm.webrtcAPI,
 	}
 
-	// Resolve PublicURL to get the public IP address for SIP routing
-	publicIP := "187.127.139.107"
-	if rm.cfg.PublicURL != "" {
-		ips, err := net.LookupIP(rm.cfg.PublicURL)
-		if err == nil && len(ips) > 0 {
-			publicIP = ips[0].String()
-			log.Printf("[RoomManager] Resolved PublicURL %s to IP: %s", rm.cfg.PublicURL, publicIP)
-		} else {
-			log.Printf("[RoomManager] Warning: Failed to resolve PublicURL %s to IP, falling back to 0.0.0.0", rm.cfg.PublicURL)
-		}
-	}
+	// Resolve public IP address for SIP routing
+	publicIP := resolvePublicIP(rm.cfg.PublicURL, rm.cfg.PublicIP)
 
 	// Create SIP bridge for Vobiz integration
 	// The SIP bridge will listen for incoming calls from Vobiz
@@ -588,4 +571,50 @@ func (rm *RoomManager) findBridgeForRTPRemote(remoteAddr *net.UDPAddr) *SIPBridg
 		}
 	}
 	return nil
+}
+
+// resolvePublicIP determines the public or local IP address for WebRTC/SIP candidates
+func resolvePublicIP(publicURL, explicitIP string) string {
+	if explicitIP != "" {
+		log.Printf("[RoomManager] Using explicit PUBLIC_IP: %s", explicitIP)
+		return explicitIP
+	}
+
+	if publicURL != "" {
+		raw := publicURL
+		if strings.Contains(raw, "://") {
+			if u, err := url.Parse(raw); err == nil {
+				raw = u.Hostname()
+			} else {
+				parts := strings.SplitN(raw, "://", 2)
+				raw = parts[1]
+			}
+		}
+		// Strip port or path if present
+		if host, _, err := net.SplitHostPort(raw); err == nil {
+			raw = host
+		} else {
+			if idx := strings.Index(raw, "/"); idx != -1 {
+				raw = raw[:idx]
+			}
+			if idx := strings.Index(raw, ":"); idx != -1 {
+				raw = raw[:idx]
+			}
+		}
+
+		if ip := net.ParseIP(raw); ip != nil {
+			log.Printf("[RoomManager] Parsed IP directly from PublicURL: %s", ip.String())
+			return ip.String()
+		}
+
+		ips, err := net.LookupIP(raw)
+		if err == nil && len(ips) > 0 {
+			log.Printf("[RoomManager] Resolved PublicURL hostname %q to IP: %s", raw, ips[0].String())
+			return ips[0].String()
+		}
+		log.Printf("[RoomManager] Warning: Failed to resolve PublicURL hostname %q to IP: %v", raw, err)
+	}
+
+	log.Printf("[RoomManager] Falling back to default local IP 127.0.0.1")
+	return "127.0.0.1"
 }

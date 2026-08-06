@@ -328,7 +328,7 @@ func handleOffer(room *Room, msg *SignalingMessage) error {
 	}
 
 	// Replace c=IN IP4 0.0.0.0 in answer.SDP with public IP for client signaling
-	publicIP := "187.127.139.107"
+	publicIP := "127.0.0.1"
 	if room.SIPBridge != nil && room.SIPBridge.config.PublicIP != "" {
 		publicIP = room.SIPBridge.config.PublicIP
 	}
