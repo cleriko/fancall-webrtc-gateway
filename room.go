@@ -206,7 +206,7 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 	}
 
 	sipURI := ""
-	sipBridge, err := NewSIPBridge(sipConfig, room, rm.sharedSIPConn)
+	sipBridge, err := NewSIPBridge(sipConfig, room, rm.sharedSIPConn, rm.sharedRTPConn)
 	if err != nil {
 		log.Printf("[RoomManager] Failed to create SIP bridge: %v", err)
 		// Non-fatal — room can still work for testing

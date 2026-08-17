@@ -29,6 +29,7 @@ type SIPBridge struct {
 	connected    bool
 	registered   bool
 	isSharedConn bool
+	isSharedRTP  bool
 
 	// UDP socket for SIP
 	conn       *net.UDPConn
@@ -65,8 +66,11 @@ func (s *SIPBridge) sipIP() string {
 	return s.config.LocalIP
 }
 
-// NewSIPBridge creates a new SIP bridge
-func NewSIPBridge(config SIPConfig, room *Room, sharedConn *net.UDPConn) (*SIPBridge, error) {
+// NewSIPBridge creates a new SIP bridge.
+// When sharedRTPConn is set, all bridges share the docker-mapped port 5064 for
+// inbound RTP. Per-bridge dynamic ports are NOT reachable from Vobiz and cause
+// MEDIA_TIMEOUT (~60s) with no creator audio.
+func NewSIPBridge(config SIPConfig, room *Room, sharedConn, sharedRTPConn *net.UDPConn) (*SIPBridge, error) {
 	var conn *net.UDPConn
 	isSharedConn := false
 
@@ -91,32 +95,40 @@ func NewSIPBridge(config SIPConfig, room *Room, sharedConn *net.UDPConn) (*SIPBr
 		config.LocalPort = conn.LocalAddr().(*net.UDPAddr).Port
 	}
 
-	// Try binding RTP socket on 5064 or dynamic port
-	rtpPort := 5064
 	var rtpConn *net.UDPConn
-	rtpAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", config.LocalIP, rtpPort))
-	if err == nil {
-		rtpConn, err = net.ListenUDP("udp4", rtpAddr)
-	}
+	isSharedRTP := false
+	assignedRtpPort := 5064
 
-	if rtpConn == nil || err != nil {
-		rtpAddrDynamic, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:0", config.LocalIP))
-		rtpConn, err = net.ListenUDP("udp4", rtpAddrDynamic)
-		if err != nil {
-			if !isSharedConn && conn != nil {
-				conn.Close()
-			}
-			return nil, fmt.Errorf("failed to listen RTP UDP: %w", err)
+	if sharedRTPConn != nil {
+		rtpConn = sharedRTPConn
+		isSharedRTP = true
+		if addr, ok := sharedRTPConn.LocalAddr().(*net.UDPAddr); ok && addr.Port > 0 {
+			assignedRtpPort = addr.Port
 		}
+	} else {
+		rtpAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", config.LocalIP, assignedRtpPort))
+		if err == nil {
+			rtpConn, err = net.ListenUDP("udp4", rtpAddr)
+		}
+		if rtpConn == nil || err != nil {
+			rtpAddrDynamic, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:0", config.LocalIP))
+			rtpConn, err = net.ListenUDP("udp4", rtpAddrDynamic)
+			if err != nil {
+				if !isSharedConn && conn != nil {
+					conn.Close()
+				}
+				return nil, fmt.Errorf("failed to listen RTP UDP: %w", err)
+			}
+		}
+		assignedRtpPort = rtpConn.LocalAddr().(*net.UDPAddr).Port
 	}
-
-	assignedRtpPort := rtpConn.LocalAddr().(*net.UDPAddr).Port
 
 	bridge := &SIPBridge{
 		config:       config,
 		room:         room,
 		conn:         conn,
 		isSharedConn: isSharedConn,
+		isSharedRTP:  isSharedRTP,
 		rtpConn:      rtpConn,
 		rtpPort:      assignedRtpPort,
 		rtpIn:        make(chan []byte, 200),
@@ -133,13 +145,15 @@ func (s *SIPBridge) Start() error {
 		go s.sipMessageLoop()
 	}
 
-	// Start RTP receiver
-	go s.rtpReceiveLoop()
+	// Inbound RTP uses RoomManager.sharedRTPDispatchLoop when isSharedRTP.
+	if !s.isSharedRTP {
+		go s.rtpReceiveLoop()
+	}
 
 	// Start media bridge
 	go s.mediaBridgeLoop()
 
-	log.Printf("[SIP] Bridge started on %s:%d (RTP: %d, SharedSIP=%v)", s.config.LocalIP, s.config.LocalPort, s.rtpPort, s.isSharedConn)
+	log.Printf("[SIP] Bridge started on %s:%d (RTP: %d, SharedSIP=%v, SharedRTP=%v)", s.config.LocalIP, s.config.LocalPort, s.rtpPort, s.isSharedConn, s.isSharedRTP)
 	return nil
 }
 
@@ -149,7 +163,7 @@ func (s *SIPBridge) Stop() {
 	if !s.isSharedConn && s.conn != nil {
 		s.conn.Close()
 	}
-	if s.rtpConn != nil {
+	if !s.isSharedRTP && s.rtpConn != nil {
 		s.rtpConn.Close()
 	}
 	close(s.rtpIn)
