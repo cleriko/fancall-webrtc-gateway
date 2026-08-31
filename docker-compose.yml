@@ -1,0 +1,24 @@
+version: '3.8'
+
+# Standalone WebRTC gateway for local / staging testing.
+# Copy .env.example values into .env, then: docker compose up --build -d
+
+services:
+  webrtc-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fancall-webrtc-gateway
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HTTP_PORT: ${HTTP_PORT:-8080}
+      API_KEY: ${API_KEY:-fancall-webrtc-secret-2026}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      PUBLIC_IP: ${PUBLIC_IP:-}
+      ICE_SERVERS: ${ICE_SERVERS:-stun:stun.l.google.com:19302}
+    ports:
+      - "${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
+      - "5064:5064/udp"
+      - "10000-10050:10000-10050/udp"

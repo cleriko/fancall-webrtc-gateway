@@ -39,8 +39,8 @@ Add the following essential variables:
 
 ```env
 # Server Configuration
-PORT=8080
-GATEWAY_API_KEY=fancall-webrtc-secret-2026
+HTTP_PORT=8080
+API_KEY=fancall-webrtc-secret-2026
 PUBLIC_URL=http://localhost:8080
 
 # ICE Servers (For local testing, standard Google STUN is fine)
@@ -79,6 +79,14 @@ If you are using Docker, you **must** run the container in host network mode or 
 
 ### Running via Docker (Local)
 
+From this repo root:
+
+```bash
+docker compose up --build -d
+```
+
+Or build and run manually:
+
 ```bash
 docker build -t fancall-webrtc-gateway .
 
@@ -86,7 +94,7 @@ docker build -t fancall-webrtc-gateway .
 docker run --network host --env-file .env fancall-webrtc-gateway
 
 # Option B: Port mapping (If host networking isn't available)
-docker run -p 8080:8080 -p 5060:5060/udp -p 10000-10050:10000-10050/udp --env-file .env fancall-webrtc-gateway
+docker run -p 8080:8080 -p 5064:5064/udp -p 10000-10050:10000-10050/udp --env-file .env fancall-webrtc-gateway
 ```
 
 ### Docker Swarm / Dokploy / Coolify (Production)
