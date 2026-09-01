@@ -235,10 +235,48 @@ func (rm *RoomManager) CreateRoom(req CreateRoomRequest) (*CreateRoomResponse, e
 		SessionID:    req.SessionID,
 		Token:        token,
 		ICEServers:   rm.cfg.ICEServers,
-		SignalingURL: fmt.Sprintf("wss://%s%s", rm.cfg.PublicURL, rm.cfg.WebSocketPath),
+		SignalingURL: buildSignalingURL(rm.cfg.PublicURL, rm.cfg.WebSocketPath),
 		Status:       RoomStatusCreated,
 		SIPURI:       sipURI,
 	}, nil
+}
+
+// buildSignalingURL converts PUBLIC_URL (http/https/host) into a WebSocket URL.
+// PUBLIC_URL is often set with a scheme (e.g. https://gateway.example.com); the
+// previous implementation produced invalid URLs like wss://https://host/ws.
+func buildSignalingURL(publicURL, wsPath string) string {
+	raw := strings.TrimSpace(publicURL)
+	if raw == "" {
+		return ""
+	}
+
+	useTLS := true
+	switch {
+	case strings.HasPrefix(raw, "https://"):
+		raw = strings.TrimPrefix(raw, "https://")
+		useTLS = true
+	case strings.HasPrefix(raw, "http://"):
+		raw = strings.TrimPrefix(raw, "http://")
+		useTLS = false
+	case strings.HasPrefix(raw, "wss://"):
+		raw = strings.TrimPrefix(raw, "wss://")
+		useTLS = true
+	case strings.HasPrefix(raw, "ws://"):
+		raw = strings.TrimPrefix(raw, "ws://")
+		useTLS = false
+	}
+
+	raw = strings.TrimSuffix(raw, "/")
+	path := wsPath
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	scheme := "wss"
+	if !useTLS {
+		scheme = "ws"
+	}
+	return fmt.Sprintf("%s://%s%s", scheme, raw, path)
 }
 
 // GetRoom retrieves a room by ID
