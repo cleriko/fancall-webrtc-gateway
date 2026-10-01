@@ -299,9 +299,12 @@ func (s *SIPBridge) handleBye(msg string, lines []string, remoteAddr *net.UDPAdd
 	s.connected = false
 	s.mu.Unlock()
 
-	// Notify room
-	s.room.SetStatus(RoomStatusEnded)
+	// Notify room BEFORE marking it ended: SendSignalingMessage drops
+	// everything once status is Ended/Failed, so the old order (status
+	// first) silently swallowed the hangup signal and the fan's call
+	// never dropped until the backend webhook round-tripped.
 	s.room.SendSignalingMessage(SignalingMessage{Type: "left", RoomID: s.room.ID})
+	s.room.SetStatus(RoomStatusEnded)
 }
 
 // handleRegisterResponse processes 200 OK for REGISTER

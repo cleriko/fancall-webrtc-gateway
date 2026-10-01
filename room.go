@@ -323,6 +323,14 @@ func (rm *RoomManager) scheduleRoomCleanup(roomID string, duration time.Duration
 
 // Close cleans up room resources
 func (r *Room) Close() {
+	// Tell the fan first: on HTTP DELETE (backend post-hangup cleanup) and
+	// any other teardown, the fan's WebSocket is the only thing that can
+	// still reach the app — drop a terminal signal before tearing down.
+	// No-op when status is already Ended/Failed (BYE path delivers its own
+	// `left` just above) and safe when nobody listens (non-blocking send
+	// with panic recovery inside SendSignalingMessage).
+	r.SendSignalingMessage(SignalingMessage{Type: "left", RoomID: r.ID})
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

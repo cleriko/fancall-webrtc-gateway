@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
@@ -141,6 +142,15 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upgrader websocket.
 				return
 			}
 		}
+		// Signaling channel closed = room torn down (hangup, HTTP DELETE,
+		// auto-cleanup). The fan may have missed the terminal message, so
+		// close the socket explicitly — both apps map WS-close to call
+		// teardown instead of sitting on dead air.
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "room closed"),
+			time.Now().Add(time.Second),
+		)
 	}()
 
 	// Handle incoming messages
